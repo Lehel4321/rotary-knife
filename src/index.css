@@ -1,6 +1,7 @@
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
 @import "tailwindcss";
 
+/* No external font download — uses the fonts installed on the machine.
+   If JetBrains Mono is installed locally it is preferred. */
 @theme {
-  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Consolas, 'Cascadia Mono', monospace;
 }
