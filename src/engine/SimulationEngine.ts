@@ -53,7 +53,7 @@ export class SimulationEngine {
   // --- Data Block: Runtime State Tags ---
   public state: MachineState = {
     controlOn: false, estop: false, guardOpen: false, needsReset: false,
-    running: false, stopReq: false, braking: false, brakeD: 0,
+    running: false, stopReq: false, braking: false, stopCommit: false, brakeD: 0,
     simTime: 0, runTime: 0,
     D: 0, v: 0, a: 0,
     theta: 0, omega: 0, thetaSet: 0, folErr: 0, knifeFault: false,

@@ -119,6 +119,13 @@ export interface MachineState {
   stopReq: boolean;
   /** TRUE while the feed axis is position-braking to the park-phase target. */
   braking: boolean;
+  /**
+   * Latched once the committed S-curve stopping distance reaches the
+   * remaining distance to the park target: from then on the stop ramp
+   * runs through to standstill (a stop is never un-committed — this is
+   * what makes the landing a single clean S-curve).
+   */
+  stopCommit: boolean;
   brakeD: number;     // feed position where the line reaches standstill (knife parked)
   simTime: number;    // machine time (s) — advances only while running
   runTime: number;    // accumulated production time of the test run (s)
