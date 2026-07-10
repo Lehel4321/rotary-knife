@@ -28,6 +28,65 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
+/**
+ * Numeric field with a local DRAFT: while you type, the field is yours —
+ * clear it, retype it, nothing snaps back. The value is committed to the
+ * engine when you press Enter or leave the field; the engine's validator
+ * then clamps it (an empty/invalid draft simply keeps the old value).
+ * Committing on every keystroke made the fields uneditable: the engine
+ * refused the transient empty value and instantly wrote the old number
+ * back into the input.
+ */
+function NumInput({ label, value, onCommit, disabled, min, max, step, extra }: {
+  label: string; value: number; onCommit: (v: number) => void;
+  disabled?: boolean; min?: number; max?: number; step?: number; extra?: ReactNode;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = () => {
+    if (draft === null) return;
+    onCommit(parseFloat(draft));
+    setDraft(null);
+  };
+  const input = (
+    <input
+      className={inputCls}
+      type="number"
+      inputMode="decimal"
+      value={draft !== null ? draft : String(value)}
+      disabled={disabled}
+      min={min} max={max} step={step}
+      onChange={e => setDraft(e.target.value)}
+      onFocus={() => { if (draft === null) setDraft(String(value)); }}
+      onBlur={commit}
+      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+    />
+  );
+  return (
+    <Field label={label}>
+      {extra ? <div className="flex gap-1">{input}{extra}</div> : input}
+    </Field>
+  );
+}
+
+/** Text field with the same draft-then-commit behavior (for the recipe name). */
+function TextInput({ label, value, onCommit, disabled }: {
+  label: string; value: string; onCommit: (v: string) => void; disabled?: boolean;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  return (
+    <Field label={label}>
+      <input
+        className={inputCls + ' w-full'}
+        value={draft !== null ? draft : value}
+        disabled={disabled}
+        onChange={e => setDraft(e.target.value)}
+        onBlur={() => { if (draft !== null) { onCommit(draft); setDraft(null); } }}
+        onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+      />
+    </Field>
+  );
+}
+
 /** RECIPE — product data. Locked while the machine runs. */
 export function RecipeModal({ onClose }: { onClose: () => void }) {
   const locked = engine.state.running;
@@ -37,29 +96,25 @@ export function RecipeModal({ onClose }: { onClose: () => void }) {
   const alpha2 = (2 * engine.contactAlpha() * 180) / Math.PI;
 
   return (
-    <Shell title="Recipe — product data" hint={locked ? '🔒 Machine running — stop to edit.' : 'Changing the recipe rebuilds the cam and re-phases the knife (next cut = new TRIM reference edge).'} onClose={onClose}>
+    <Shell title="Recipe — product data" hint={locked ? '🔒 Machine running — stop to edit.' : 'Values apply when you press Enter or leave a field. Changing the recipe rebuilds the cam and re-phases the knife (next cut = new TRIM reference edge).'} onClose={onClose}>
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-        <Field label="Name">
-          <input className={inputCls + ' w-full'} disabled={locked} value={r.name} onChange={e => up({ name: e.target.value })} />
-        </Field>
-        <Field label="Cut length [mm]">
-          <input className={inputCls} type="number" disabled={locked} value={r.len} min={50} step={10} onChange={e => up({ len: +e.target.value })} />
-        </Field>
-        <Field label="Line speed [m/min]">
-          <input className={inputCls} type="number" disabled={locked} value={Math.round(toMMin(r.spd) * 10) / 10} min={1} step={5} onChange={e => up({ spd: toMmSec(+e.target.value) })} />
-        </Field>
-        <Field label={`Thickness [mm] (max ${engine.config.maxThick})`}>
-          <input className={inputCls} type="number" disabled={locked} value={r.thick} min={0.5} max={engine.config.maxThick} step={0.5} onChange={e => up({ thick: +e.target.value })} />
-        </Field>
+        <TextInput label="Name" value={r.name} disabled={locked} onCommit={v => up({ name: v })} />
+        <NumInput label="Cut length [mm]" value={r.len} disabled={locked} min={50} max={5000} step={10}
+          onCommit={v => up({ len: v })} />
+        <NumInput label="Line speed [m/min]" value={Math.round(toMMin(r.spd) * 10) / 10} disabled={locked} min={1} step={5}
+          onCommit={v => up({ spd: toMmSec(v) })} />
+        <NumInput label={`Thickness [mm] (max ${engine.config.maxThick})`} value={r.thick} disabled={locked}
+          min={0.5} max={engine.config.maxThick} step={0.5} onCommit={v => up({ thick: v })} />
         <Field label="Sync mode">
           <select className={inputCls + ' w-full'} disabled={locked} value={r.syncMode} onChange={e => up({ syncMode: e.target.value as 'constant' | 'comp' })}>
             <option value="constant">CONSTANT ω (classic LRK)</option>
             <option value="comp">COMPENSATED (straight @ 20mm)</option>
           </select>
         </Field>
-        <Field label="Velocity ratio k [%]">
-          <div className="flex gap-1">
-            <input className={inputCls} type="number" disabled={locked || r.syncMode === 'comp'} value={Math.round(r.ratio * 1000) / 10} min={80} max={130} step={0.5} onChange={e => up({ ratio: +e.target.value / 100 })} />
+        <NumInput label="Velocity ratio k [%]" value={Math.round(r.ratio * 1000) / 10}
+          disabled={locked || r.syncMode === 'comp'} min={80} max={130} step={0.5}
+          onCommit={v => up({ ratio: v / 100 })}
+          extra={
             <button
               disabled={locked || r.syncMode === 'comp'}
               title="k = α/sin(α): re-aligns the face bottom with the entry point at this thickness"
@@ -67,8 +122,7 @@ export function RecipeModal({ onClose }: { onClose: () => void }) {
               className="border border-cyan-800 text-cyan-400 text-[0.65rem] font-bold uppercase px-2 rounded hover:bg-cyan-950/40 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed">
               auto {(engine.suggestedRatio() * 100).toFixed(1)}
             </button>
-          </div>
-        </Field>
+          } />
       </div>
       <div className="mt-4 text-[0.7rem] font-mono text-zinc-500 leading-relaxed">
         blade contact window at {r.thick}mm: <span className="text-zinc-300">{alpha2.toFixed(1)}°</span>
@@ -93,14 +147,12 @@ export function ParamsModal({ onClose }: { onClose: () => void }) {
   const tooSmall = engine.params.syncDeg < alpha2;
 
   return (
-    <Shell title="Process parameters" hint={locked ? '🔒 Machine running — stop to edit.' : 'The sync window is the knife-angle range where the blade speed is locked to the material.'} onClose={onClose}>
+    <Shell title="Process parameters" hint={locked ? '🔒 Machine running — stop to edit.' : 'Values apply when you press Enter or leave a field. The sync window is the knife-angle range where the blade speed is locked to the material.'} onClose={onClose}>
       <div className="grid grid-cols-2 gap-4">
-        <Field label={`Sync window [° knife angle]`}>
-          <input className={inputCls} type="number" disabled={locked} value={engine.params.syncDeg} min={10} max={140} step={5} onChange={e => up({ syncDeg: +e.target.value })} />
-        </Field>
-        <Field label="Out-feed gain [× line speed]">
-          <input className={inputCls} type="number" disabled={locked} value={engine.params.outFac} min={1} max={3} step={0.05} onChange={e => up({ outFac: +e.target.value })} />
-        </Field>
+        <NumInput label="Sync window [° knife angle]" value={engine.params.syncDeg} disabled={locked}
+          min={10} max={140} step={5} onCommit={v => up({ syncDeg: v })} />
+        <NumInput label="Out-feed gain [× line speed]" value={engine.params.outFac} disabled={locked}
+          min={1} max={3} step={0.05} onCommit={v => up({ outFac: v })} />
       </div>
       <div className={`mt-4 text-[0.7rem] font-mono ${tooSmall ? 'text-orange-400 font-semibold' : 'text-zinc-500'}`}>
         {tooSmall ? '⚠ ' : ''}sync window {engine.params.syncDeg}° vs blade contact {alpha2.toFixed(1)}° at {engine.recipe.thick}mm
@@ -118,38 +170,30 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   const up = (u: Parameters<typeof engine.updateConfig>[0]) => { engine.updateConfig(u); bump(x => x + 1); };
 
   return (
-    <Shell title="Machine configuration" hint={locked ? '🔒 Control is ON — turn it off to change the machine build (commissioning mode).' : 'Physical build: knife drum and servo drive data. Later knife SHAPES will plug in here.'} onClose={onClose}>
+    <Shell title="Machine configuration" hint={locked ? '🔒 Control is ON — turn it off to change the machine build (commissioning mode).' : 'Values apply when you press Enter or leave a field. Physical build: knife drum and servo drive data. Later knife SHAPES will plug in here.'} onClose={onClose}>
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-        <Field label="Knife tip radius [mm]">
-          <input className={inputCls} type="number" disabled={locked} value={c.knifeR} min={40} max={400} step={5} onChange={e => up({ knifeR: +e.target.value })} />
-        </Field>
+        <NumInput label="Knife tip radius [mm]" value={c.knifeR} disabled={locked} min={40} max={400} step={5}
+          onCommit={v => up({ knifeR: v })} />
         <Field label="Blades on drum">
           <select className={inputCls} disabled={locked} value={c.knives} onChange={e => up({ knives: +e.target.value as 1 | 2 })}>
             <option value={1}>1</option>
             <option value={2}>2</option>
           </select>
         </Field>
-        <Field label="Overcut [mm]">
-          <input className={inputCls} type="number" disabled={locked} value={c.overcut} min={0} max={2} step={0.1} onChange={e => up({ overcut: +e.target.value })} />
-        </Field>
-        <Field label={`Knife ωmax [rad/s] (${(c.knifeWmax * 60 / (2 * Math.PI)).toFixed(0)} rpm)`}>
-          <input className={inputCls} type="number" disabled={locked} value={c.knifeWmax} min={2} max={200} step={1} onChange={e => up({ knifeWmax: +e.target.value })} />
-        </Field>
-        <Field label="Knife αmax [rad/s²]">
-          <input className={inputCls} type="number" disabled={locked} value={c.knifeAmax} min={20} max={20000} step={50} onChange={e => up({ knifeAmax: +e.target.value })} />
-        </Field>
-        <Field label="Following error limit [°]">
-          <input className={inputCls} type="number" disabled={locked} value={c.folErrLimit} min={0.5} max={30} step={0.5} onChange={e => up({ folErrLimit: +e.target.value })} />
-        </Field>
-        <Field label="Feed Vmax [mm/s]">
-          <input className={inputCls} type="number" disabled={locked} value={c.axVmax} min={10} step={100} onChange={e => up({ axVmax: +e.target.value })} />
-        </Field>
-        <Field label="Feed Amax [mm/s²]">
-          <input className={inputCls} type="number" disabled={locked} value={c.axAmax} min={100} step={1000} onChange={e => up({ axAmax: +e.target.value })} />
-        </Field>
-        <Field label="Feed jerk [mm/s³]">
-          <input className={inputCls} type="number" disabled={locked} value={c.axJerk} min={1000} step={10000} onChange={e => up({ axJerk: +e.target.value })} />
-        </Field>
+        <NumInput label="Overcut [mm]" value={c.overcut} disabled={locked} min={0} max={2} step={0.1}
+          onCommit={v => up({ overcut: v })} />
+        <NumInput label={`Knife ωmax [rad/s] (${(c.knifeWmax * 60 / (2 * Math.PI)).toFixed(0)} rpm)`} value={c.knifeWmax}
+          disabled={locked} min={2} max={200} step={1} onCommit={v => up({ knifeWmax: v })} />
+        <NumInput label="Knife αmax [rad/s²]" value={c.knifeAmax} disabled={locked} min={20} max={20000} step={50}
+          onCommit={v => up({ knifeAmax: v })} />
+        <NumInput label="Following error limit [°]" value={c.folErrLimit} disabled={locked} min={0.5} max={30} step={0.5}
+          onCommit={v => up({ folErrLimit: v })} />
+        <NumInput label="Feed Vmax [mm/s]" value={c.axVmax} disabled={locked} min={10} step={100}
+          onCommit={v => up({ axVmax: v })} />
+        <NumInput label="Feed Amax [mm/s²]" value={c.axAmax} disabled={locked} min={100} step={1000}
+          onCommit={v => up({ axAmax: v })} />
+        <NumInput label="Feed jerk [mm/s³]" value={c.axJerk} disabled={locked} min={1000} step={10000}
+          onCommit={v => up({ axJerk: v })} />
       </div>
       <div className="mt-4 text-[0.7rem] font-mono text-zinc-500">
         knife circumference {(2 * Math.PI * c.knifeR).toFixed(0)}mm · max feasible line speed with this drive: <span className="text-cyan-400">{toMMin(engine.vFeasibleLine()).toFixed(1)} m/min</span>
