@@ -110,7 +110,7 @@ The first cut after (re)phasing is the **TRIM** cut (the LRK's "first cut"
 ```bash
 npm ci           # exact locked dependency versions (hash-verified)
 npm run dev      # http://localhost:3002 (localhost only)
-npm test         # 51 tests, see below
+npm test         # 90 tests, see below
 npm run lint     # typecheck
 npm run build
 ```
@@ -134,9 +134,34 @@ The test suite proves the machine runs on the MotionProfileSolver math:
   compensation exactness, standstill insertion, trim cut, graceful stop
   to the park phase, E-Stop/guard semantics, overspeed fault,
   ramp-exact piece lengths.
+- `tests/recipe-book.test.ts`, `tests/recipe-editor.test.tsx` — the recipe
+  library and the editor driven through the DOM: edit → SAVE → load back,
+  persistence across a reload, corrupt storage, and the running interlock.
+- `tests/nip-rollers.test.ts`, `tests/machine-canvas.test.tsx`,
+  `tests/outfeed.test.ts` — the animation is physics, not decoration: the
+  in-feed rollers are read back out of the canvas draw calls and must turn
+  so that their faces pull the material *forward*, without slip; the
+  out-feed belt runs at the line's actual speed.
 
 Operate like a real machine: **Control ON → Start**. Recipe changes only
 while stopped; machine config only with the control OFF.
+
+## Recipes
+
+The **Recipe** card opens the product data (cut length, line speed,
+thickness, sync mode, velocity ratio) together with the **recipe library**,
+which is stored in the browser and survives a reload:
+
+- **Load** a stored product into the machine — the cam is rebuilt for it.
+- **Save** stores the machine's current product data under its name. The
+  badge says `MODIFIED` / `NOT IN LIBRARY` while you have unsaved edits, and
+  the Recipe card shows **● unsaved** on the machine screen.
+- To keep a copy instead of overwriting: change the **Name** field, then
+  **Save** (that is the "save as").
+- **New** starts a fresh product; **Delete** removes the selected one, and
+  **Restore factory** brings the shipped products back.
+
+Editing and the library are locked while the machine runs — stop it first.
 
 ## Structure
 
@@ -148,6 +173,7 @@ src/
     FB_Cam.ts            LRK-style cam: sync window + poly5 + standstill
     MotionProfile.ts     S-curve math (from MotionProfileSolver)
     FC_Safety.ts  FC_Feeder.ts  FC_Knife.ts  FC_Cut.ts  FC_Outfeed.ts
+    RecipeBook.ts        recipe library (HMI-side, persisted in the browser)
   components/            MachineCanvas, ScopePanel, CamPanel, StatsBar,
                          Controls, Modals, CutLog
 tests/cam.test.ts        cam continuity/monotonicity, straightness physics,

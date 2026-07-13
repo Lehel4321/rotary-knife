@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { engine, toMMin } from '../engine/SimulationEngine';
+import { recipeBook, sameRecipe } from '../engine/RecipeBook';
 import { RecipeModal, ParamsModal, SettingsModal } from './Modals';
 
 /**
@@ -14,6 +15,8 @@ export function Controls() {
   const [showSettings, setShowSettings] = useState(false);
   const st = engine.state;
   const overFeasible = engine.cruiseSpeed() > engine.vFeasibleLine() + 1e-9;
+  const savedRecipe = recipeBook.get(engine.recipe.name);
+  const recipeDirty = !savedRecipe || !sameRecipe(savedRecipe, engine.recipe);
 
   return (
     <div className="flex flex-col gap-4">
@@ -164,7 +167,10 @@ export function Controls() {
             </h3>
             <span className="text-[0.6rem] text-blue-400 font-semibold uppercase">{st.running ? '🔒 view' : 'edit ✎'}</span>
           </div>
-          <div className="text-sm font-mono font-bold text-blue-400 leading-tight truncate">{engine.recipe.name}</div>
+          <div className="text-sm font-mono font-bold text-blue-400 leading-tight truncate">
+            {engine.recipe.name}
+            {recipeDirty && <span className="ml-2 text-[0.6rem] text-yellow-500 font-semibold uppercase" title="Not stored in the recipe library — open the recipe to SAVE it">● unsaved</span>}
+          </div>
           <div className="text-[10px] text-zinc-500 font-mono">
             {engine.recipe.len}mm · {toMMin(engine.recipe.spd).toFixed(0)}m/min · {engine.recipe.thick}mm thick · {engine.recipe.syncMode === 'comp' ? 'COMPENSATED' : 'k=' + (engine.recipe.ratio * 100).toFixed(1) + '%'}
           </div>

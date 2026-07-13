@@ -1,5 +1,6 @@
-import { ReactNode, useState } from 'react';
+import { ReactNode, useEffect, useState } from 'react';
 import { engine, toMMin, toMmSec } from '../engine/SimulationEngine';
+import { recipeBook, blankRecipe, sameRecipe } from '../engine/RecipeBook';
 
 const inputCls = "bg-[#18181b] border border-[#27272a] rounded text-[0.875rem] text-[#f4f4f5] px-2 py-1 font-mono focus:outline-none focus:border-[#eab308] disabled:opacity-40 disabled:cursor-not-allowed w-24";
 const labelCls = "text-[0.65rem] uppercase tracking-[0.05em] text-[#71717a] font-semibold mb-1";
@@ -19,10 +20,13 @@ function Shell({ title, hint, onClose, children }: { title: string; hint?: strin
   );
 }
 
+/** Stable DOM id for a field, so its <label> actually points at its control. */
+const fieldId = (label: string) => 'f-' + label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex flex-col">
-      <label className={labelCls}>{label}</label>
+      <label className={labelCls} htmlFor={fieldId(label)}>{label}</label>
       {children}
     </div>
   );
@@ -49,6 +53,7 @@ function NumInput({ label, value, onCommit, disabled, min, max, step, extra }: {
   };
   const input = (
     <input
+      id={fieldId(label)}
       className={inputCls}
       type="number"
       inputMode="decimal"
@@ -76,6 +81,7 @@ function TextInput({ label, value, onCommit, disabled }: {
   return (
     <Field label={label}>
       <input
+        id={fieldId(label)}
         className={inputCls + ' w-full'}
         value={draft !== null ? draft : value}
         disabled={disabled}
@@ -87,6 +93,34 @@ function TextInput({ label, value, onCommit, disabled }: {
   );
 }
 
+/** Small uppercase action button used by the recipe library bar. */
+function LibBtn({ label, title, onClick, disabled, tone }: {
+  label: string; title: string; onClick: () => void; disabled?: boolean;
+  tone: 'save' | 'load' | 'new' | 'delete';
+}) {
+  const tones = {
+    save: 'border-green-700 text-green-400 hover:bg-green-950/50',
+    load: 'border-blue-800 text-blue-400 hover:bg-blue-950/50',
+    new: 'border-zinc-700 text-zinc-300 hover:bg-zinc-800',
+    delete: 'border-red-900 text-red-400 hover:bg-red-950/50',
+  };
+  return (
+    <button
+      onClick={onClick} disabled={disabled} title={title}
+      className={`border rounded px-3 py-1 text-[0.7rem] font-bold uppercase tracking-wide transition-all cursor-pointer
+        disabled:opacity-40 disabled:cursor-not-allowed ${tones[tone]}`}>
+      {label}
+    </button>
+  );
+}
+
+/** Re-render this component whenever the stored recipe list changes. */
+function useRecipeList() {
+  const [, bump] = useState(0);
+  useEffect(() => recipeBook.subscribe(() => bump(x => x + 1)), []);
+  return recipeBook.list();
+}
+
 /** RECIPE — product data. Locked while the machine runs. */
 export function RecipeModal({ onClose }: { onClose: () => void }) {
   const locked = engine.state.running;
@@ -95,8 +129,71 @@ export function RecipeModal({ onClose }: { onClose: () => void }) {
   const up = (u: Parameters<typeof engine.updateRecipe>[0]) => { engine.updateRecipe(u); bump(x => x + 1); };
   const alpha2 = (2 * engine.contactAlpha() * 180) / Math.PI;
 
+  const stored = useRecipeList();
+  const [sel, setSel] = useState(() => (recipeBook.has(r.name) ? r.name : stored[0]?.name ?? ''));
+  const saved = recipeBook.get(r.name);
+  const dirty = !saved || !sameRecipe(saved, r);
+
+  const load = () => {
+    const pick = recipeBook.get(sel);
+    if (pick) up({ ...pick });
+  };
+  // engine.notify() as well: the recipe card behind the modal shows the
+  // "unsaved" badge and has to drop it the moment the recipe is stored.
+  const save = () => { recipeBook.save(r); setSel(r.name); engine.notify(); };
+  const newRecipe = () => {
+    let name = 'NEW-RECIPE', i = 2;
+    while (recipeBook.has(name)) name = `NEW-RECIPE-${i++}`;
+    up({ ...blankRecipe(), name });
+  };
+  const del = () => {
+    recipeBook.remove(sel);
+    const rest = recipeBook.list();
+    setSel(rest[0]?.name ?? '');
+  };
+
   return (
     <Shell title="Recipe — product data" hint={locked ? '🔒 Machine running — stop to edit.' : 'Values apply when you press Enter or leave a field. Changing the recipe rebuilds the cam and re-phases the knife (next cut = new TRIM reference edge).'} onClose={onClose}>
+      {/* ---- Recipe library: what is stored vs what is loaded in the machine ---- */}
+      <div className="mb-4 pb-4 border-b border-[#27272a] flex flex-col gap-2">
+        <div className="flex items-end gap-2 flex-wrap">
+          <div className="flex flex-col flex-1 min-w-[12rem]">
+            <label className={labelCls} htmlFor="f-stored-recipes">Stored recipes ({stored.length})</label>
+            <select id="f-stored-recipes" className={inputCls + ' w-full'} disabled={locked || stored.length === 0}
+              value={sel} onChange={e => setSel(e.target.value)}>
+              {stored.length === 0 && <option value="">— library empty —</option>}
+              {stored.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+            </select>
+          </div>
+          {stored.length === 0 ? (
+            <LibBtn label="Restore factory" tone="load" disabled={locked}
+              title="Put the machine's factory products back in the library" onClick={() => recipeBook.restoreFactory()} />
+          ) : (
+            <>
+              <LibBtn label="Load" tone="load" disabled={locked || !sel}
+                title="Load the selected recipe into the machine (rebuilds the cam)" onClick={load} />
+              <LibBtn label="Delete" tone="delete" disabled={locked || !sel}
+                title="Remove the selected recipe from the library" onClick={del} />
+            </>
+          )}
+          <span className="w-px self-stretch bg-[#27272a] mx-1" />
+          <LibBtn label="New" tone="new" disabled={locked}
+            title="Start a fresh recipe from the default product data" onClick={newRecipe} />
+          <LibBtn label={saved ? 'Save' : 'Save new'} tone="save" disabled={locked || !dirty}
+            title={`Store the current product data in the library under "${r.name}"`} onClick={save} />
+        </div>
+        <div className="text-[0.7rem] font-mono">
+          {dirty ? (
+            <span className="text-yellow-500">
+              ● {saved ? 'MODIFIED' : 'NOT IN LIBRARY'} — press SAVE to store the machine's data as
+              {' '}<span className="text-zinc-300">{r.name}</span>. To keep a copy instead, change the NAME field first, then SAVE.
+            </span>
+          ) : (
+            <span className="text-green-500">✓ SAVED — the loaded product data matches <span className="text-zinc-300">{r.name}</span> in the library.</span>
+          )}
+        </div>
+      </div>
+
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
         <TextInput label="Name" value={r.name} disabled={locked} onCommit={v => up({ name: v })} />
         <NumInput label="Cut length [mm]" value={r.len} disabled={locked} min={50} max={5000} step={10}
@@ -106,7 +203,7 @@ export function RecipeModal({ onClose }: { onClose: () => void }) {
         <NumInput label={`Thickness [mm] (max ${engine.config.maxThick})`} value={r.thick} disabled={locked}
           min={0.5} max={engine.config.maxThick} step={0.5} onCommit={v => up({ thick: v })} />
         <Field label="Sync mode">
-          <select className={inputCls + ' w-full'} disabled={locked} value={r.syncMode} onChange={e => up({ syncMode: e.target.value as 'constant' | 'comp' })}>
+          <select id={fieldId('Sync mode')} className={inputCls + ' w-full'} disabled={locked} value={r.syncMode} onChange={e => up({ syncMode: e.target.value as 'constant' | 'comp' })}>
             <option value="constant">CONSTANT ω (classic LRK)</option>
             <option value="comp">COMPENSATED (straight @ 20mm)</option>
           </select>
@@ -175,7 +272,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
         <NumInput label="Knife tip radius [mm]" value={c.knifeR} disabled={locked} min={40} max={400} step={5}
           onCommit={v => up({ knifeR: v })} />
         <Field label="Blades on drum">
-          <select className={inputCls} disabled={locked} value={c.knives} onChange={e => up({ knives: +e.target.value as 1 | 2 })}>
+          <select id={fieldId('Blades on drum')} className={inputCls} disabled={locked} value={c.knives} onChange={e => up({ knives: +e.target.value as 1 | 2 })}>
             <option value={1}>1</option>
             <option value={2}>2</option>
           </select>
