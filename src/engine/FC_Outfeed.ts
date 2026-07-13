@@ -11,7 +11,11 @@ import { SimulationEngine } from './SimulationEngine';
  * travel butted together).
  */
 export function FC_Outfeed(db: SimulationEngine, dt: number) {
-  const outV = db.cruiseSpeed() * db.params.outFac;
+  // Geared to the ACTUAL line speed, not to the commanded cruise speed: the
+  // belt is driven from the same line shaft, so it ramps up with the line and
+  // brakes with it. Using the setpoint made the belt keep flinging pieces away
+  // at full speed while the line was already braking to a standstill.
+  const outV = db.state.v * db.params.outFac;
   for (const p of db.pieces) p.left += outV * dt;
   // Purge pieces that have left the visible machine area
   if (db.pieces.length > 0 && db.pieces[0].left > 2500) db.pieces.shift();

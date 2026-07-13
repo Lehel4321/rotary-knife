@@ -38,6 +38,20 @@ export function gradeFace(s: number): { label: string; color: string } {
   return { label: 'POOR', color: '#ef4444' };
 }
 
+/**
+ * Screen angle of the rotation tick on an in-feed nip roller, for feed
+ * position D (mm) and a roller of radius Rmm (mm).
+ *
+ * Canvas y points DOWN, so a GROWING angle reads as clockwise on screen.
+ * The material travels +x, so the roller face at the nip must travel +x too:
+ * the lower roller (dir=+1, material on its 12 o'clock) turns clockwise, the
+ * upper roller (dir=−1, material on its 6 o'clock) counter-clockwise. Scaling
+ * by Rmm makes the rim roll on the material without slip.
+ */
+export function nipTickAngle(D: number, Rmm: number, dir: 1 | -1) {
+  return (D / Rmm) * dir + (dir > 0 ? 0 : Math.PI);
+}
+
 // Fading trail of the blade tip (canvas-side only, machine frame)
 let tipTrail: { x: number; y: number }[] = [];
 
@@ -112,7 +126,9 @@ export function MachineCanvas() {
       ctx.strokeStyle = '#27272a';
       ctx.strokeRect(X(45), beltY, X(axisMax - 15) - X(45), 6);
       ctx.fillStyle = '#52525b';
-      const scroll = ((st.simTime * engine.cruiseSpeed() * engine.params.outFac) * sc) % 18;
+      // Belt travel = outFac × fed material, so the chevrons ramp and brake
+      // with the line instead of running at the setpoint speed regardless.
+      const scroll = ((st.D * engine.params.outFac) * sc) % 18;
       for (let x = X(45) + scroll; x < X(axisMax - 15) - 4; x += 18) {
         ctx.beginPath(); ctx.moveTo(x, beltY + 1.5); ctx.lineTo(x + 5, beltY + 3); ctx.lineTo(x, beltY + 4.5); ctx.fill();
       }
@@ -121,12 +137,12 @@ export function MachineCanvas() {
       // in-feed nip rollers (the FEED AXIS — leading axis)
       const nipX = X(-380);
       const nipR = 20;
+      const nipRmm = nipR / sc; // roll without slip against the material
       for (const dir of [-1, 1]) {
         const cy = yA - T * sc / 2 + dir * (T * sc / 2 + nipR + 1);
         ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 1.5;
         ctx.beginPath(); ctx.arc(nipX, cy, nipR, 0, Math.PI * 2); ctx.stroke();
-        // rotation tick
-        const a0 = (st.D / 20) * -dir + (dir > 0 ? 0 : Math.PI);
+        const a0 = nipTickAngle(st.D, nipRmm, dir as 1 | -1);
         ctx.beginPath(); ctx.moveTo(nipX, cy); ctx.lineTo(nipX + nipR * Math.cos(a0), cy + nipR * Math.sin(a0)); ctx.stroke();
       }
       txt(ctx, nipX, yA - T * sc - nipR * 2 - 12, 'FEED AXIS (master)', '#3b82f6');
