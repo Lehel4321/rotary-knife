@@ -1,5 +1,6 @@
 import { SimulationEngine } from './SimulationEngine';
 import { CutFace, CutRecord } from '../types';
+import { bladeAngle } from './FB_Cam';
 
 /**
  * FC33: Cut Detection & Cut Face Recorder
@@ -36,8 +37,7 @@ export function FC_Cut(db: SimulationEngine) {
   const yc = R - db.config.overcut; // drum center height above the anvil
 
   // --- Network 1: blade-in-material trace ---
-  // Blade nearest to bottom dead center: θb ∈ [−Θ/2, +Θ/2)
-  const thB = st.theta - Theta * Math.round(st.theta / Theta);
+  const thB = bladeAngle(st.theta, Theta);
   const tipY = yc - R * Math.cos(thB);
   const inMat = tipY < T && Math.abs(thB) < Math.PI / 2;
 
@@ -49,10 +49,18 @@ export function FC_Cut(db: SimulationEngine) {
       db.trace.pts = [];
       db.trace.folErrMax = 0;
     }
-    db.trace.pts.push({
+    // Decimated on push: at very low line speed the blade can sit in the
+    // material for tens of thousands of scans — recording a point only
+    // when the tip has moved keeps the face bounded (~a few hundred
+    // points) at full metric fidelity (0.08 mm resolution).
+    const pt = {
       d: Math.max(0, Math.min(T, T - tipY)),
       x: R * Math.sin(thB) - (st.D - db.trace.D0),
-    });
+    };
+    const last = db.trace.pts[db.trace.pts.length - 1];
+    if (!last || Math.abs(pt.d - last.d) > 0.08 || Math.abs(pt.x - last.x) > 0.08) {
+      db.trace.pts.push(pt);
+    }
     const errDeg = Math.abs((st.folErr * 180) / Math.PI);
     if (errDeg > db.trace.folErrMax) db.trace.folErrMax = errDeg;
   } else if (db.trace.active) {
@@ -73,19 +81,22 @@ export function FC_Cut(db: SimulationEngine) {
         straight: hi - lo,
         skew: pts[downEnd].x - pts[0].x,
         drag: Math.abs(pts[pts.length - 1].x - pts[0].x),
+        thick: T,
+        trim: false,
       };
-      db.face = face;
       // Attach to the newest cut record that has no face data yet
       for (let i = db.log.length - 1; i >= 0 && i >= db.log.length - 3; i--) {
         const rec = db.log[i];
-        if (rec.straight === null) {
+        if (rec.straight === null && !rec.lost) {
           rec.straight = face.straight;
           rec.skew = face.skew;
           rec.drag = face.drag;
           rec.folErrMax = Math.max(rec.folErrMax, db.trace.folErrMax);
+          face.trim = rec.trim;
           break;
         }
       }
+      db.face = face;
       db.notify();
     }
     db.trace.pts = [];

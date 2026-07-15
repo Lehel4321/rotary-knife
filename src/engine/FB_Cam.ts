@@ -1,4 +1,5 @@
 import { Recipe, ProcessParams, MachineConfig } from '../types';
+import { toMMin, toDeg } from './units';
 
 /**
  * FB100: Rotary Knife Cam Profile (LRK-style camming)
@@ -91,6 +92,16 @@ export function suggestRatio(alpha: number): number {
 }
 
 /**
+ * Angle of the blade nearest bottom dead center: θb ∈ [−Θ/2, +Θ/2).
+ * THE wrap convention for "where is the blade relative to the cut point" —
+ * FC_Cut (physics) and the HMI canvas must use this same helper so the
+ * drawn blade can never disagree with where cutting actually happens.
+ */
+export function bladeAngle(theta: number, Theta: number): number {
+  return theta - Theta * Math.round(theta / Theta);
+}
+
+/**
  * Quintic Hermite coefficients over u ∈ [0,1] with position/velocity/
  * acceleration boundary conditions at both ends (VDI 2143 5th-degree
  * polynomial — the standard cam return segment, same as LCamHdl).
@@ -157,12 +168,12 @@ export function buildCam(recipe: Recipe, params: ProcessParams, config: MachineC
     while (thetaA > 0.02 && syncMasterDist(thetaA) > maxSA) thetaA *= 0.95;
     sA = syncMasterDist(thetaA);
     warnings.push(
-      `CUT LENGTH TOO SHORT for the ${params.syncDeg}° sync window — window reduced to ${((2 * thetaA * 180) / Math.PI).toFixed(0)}°`,
+      `CUT LENGTH TOO SHORT for the ${params.syncDeg}° sync window — window reduced to ${toDeg(2 * thetaA).toFixed(0)}°`,
     );
   }
   if (thetaA < alpha) {
     warnings.push(
-      `SYNC WINDOW ${((2 * thetaA * 180) / Math.PI).toFixed(0)}° < blade contact ${((2 * alpha * 180) / Math.PI).toFixed(0)}° — the blade leaves sync INSIDE the material, the cut face will be damaged`,
+      `SYNC WINDOW ${toDeg(2 * thetaA).toFixed(0)}° < blade contact ${toDeg(2 * alpha).toFixed(0)}° — the blade leaves sync INSIDE the material, the cut face will be damaged`,
     );
   }
 
@@ -223,7 +234,7 @@ export function buildCam(recipe: Recipe, params: ProcessParams, config: MachineC
   );
   if (recipe.spd > cam.vFeasible + 1e-9) {
     warnings.push(
-      `LINE SPEED ${(recipe.spd * 0.06).toFixed(0)} m/min EXCEEDS the knife axis limit ${(cam.vFeasible * 0.06).toFixed(0)} m/min — expect following error and bad cuts`,
+      `LINE SPEED ${toMMin(recipe.spd).toFixed(0)} m/min EXCEEDS the knife axis limit ${toMMin(cam.vFeasible).toFixed(0)} m/min — expect following error and bad cuts`,
     );
   }
 

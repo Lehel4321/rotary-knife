@@ -1,6 +1,10 @@
 import { useEffect, useRef } from 'react';
 import { engine, toMMin } from '../engine/SimulationEngine';
-import { evalCam } from '../engine/FB_Cam';
+import { CamProfile, evalCam } from '../engine/FB_Cam';
+
+// The ratio curve is static per cam — resampling 400 evalCam calls every
+// animation frame to animate one cursor is wasted work. Cached on cam identity.
+let camCache: { cam: CamProfile; ratio: number[]; peak: number } | null = null;
 
 /**
  * CAM PROFILE panel — how the feeder and the knife are synchronized.
@@ -39,15 +43,20 @@ export function CamPanel({ onClose }: { onClose: () => void }) {
       const plotW = w - 210, x0 = 46, y0 = 16, plotH = h - 48;
       const X = (phi: number) => x0 + (phi / cam.L) * plotW;
 
-      // sample ratio curve r(φ) = dθ/dφ · R (tip speed / material speed at k·…)
+      // ratio curve r(φ) = dθ/dφ · R (tip speed / material speed), cached per cam
       const N = 400;
-      const ratio: number[] = [];
-      let peakRatio = 0;
-      for (let i = 0; i <= N; i++) {
-        const r = evalCam(cam, (i / N) * cam.L)[1] * R;
-        ratio.push(r);
-        if (r > peakRatio) peakRatio = r;
+      if (!camCache || camCache.cam !== cam) {
+        const ratio: number[] = [];
+        let peak = 0;
+        for (let i = 0; i <= N; i++) {
+          const r = evalCam(cam, (i / N) * cam.L)[1] * R;
+          ratio.push(r);
+          if (r > peak) peak = r;
+        }
+        camCache = { cam, ratio, peak };
       }
+      const ratio = camCache.ratio;
+      const peakRatio = camCache.peak;
       const rMax = Math.max(peakRatio * 1.15, 1.4);
       const Y = (r: number) => y0 + plotH - (r / rMax) * plotH;
 
@@ -84,7 +93,7 @@ export function CamPanel({ onClose }: { onClose: () => void }) {
       ctx.stroke();
 
       // live phase cursor
-      const phi = (((engine.state.D - engine.state.Dref) % cam.L) + cam.L) % cam.L;
+      const phi = engine.camPhase();
       ctx.strokeStyle = '#e4e4e7';
       ctx.beginPath(); ctx.moveTo(X(phi), y0); ctx.lineTo(X(phi), y0 + plotH); ctx.stroke();
 

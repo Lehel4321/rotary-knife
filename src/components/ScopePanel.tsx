@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { engine, toMMin } from '../engine/SimulationEngine';
+import { engine, toMMin, SCAN_TIME } from '../engine/SimulationEngine';
 
 /**
  * SYNC SCOPE — the money shot of rotary knife camming: the material
@@ -52,33 +52,49 @@ export function ScopePanel({ onClose }: { onClose: () => void }) {
 
         const vLane = { y0: 18, h: 130 };
         const eLane = { y0: 170, h: 56 };
-        // Fit the knife tip's return-stroke peak (maxSlope·R × line speed)
-        const vMaxAx = Math.max(100, engine.cruiseSpeed() * 1.1,
-          engine.cam.maxSlope * engine.config.knifeR * engine.cruiseSpeed() * 1.12);
+
+        // Pass 1: gather the visible samples. The ring is written at
+        // exactly 1 sample per scan, so the window is the newest
+        // span/SCAN_TIME entries — no need to walk the whole buffer.
+        const rows: { x: number; vm: number; vt: number; e: number; pen: number; cut: number }[] = [];
+        let dataVMax = 0, dataEMax = 0;
+        const jStart = Math.max(0, s.n - (Math.ceil(span / SCAN_TIME) + 4));
+        for (let j = jStart; j < s.n; j++) {
+          const idx = (s.i - s.n + j + s.cap) % s.cap;
+          const t = s.t[idx];
+          if (t < tMin || t > tMax) continue;
+          const vm = s.vMat[idx], vt = s.vTip[idx], e = s.errDeg[idx];
+          rows.push({ x: X(t), vm, vt, e, pen: s.pen[idx], cut: s.cut[idx] });
+          if (vm > dataVMax) dataVMax = vm;
+          if (vt > dataVMax) dataVMax = vt;
+          if (Math.abs(e) > dataEMax) dataEMax = Math.abs(e);
+        }
+
+        // Scales fit the DATA in view (the buffer may hold samples from a
+        // different recipe speed than the live settings — scaling from
+        // live settings would draw old traces off-canvas), while still
+        // covering the live limit lines.
+        const vMaxAx = Math.max(100, dataVMax * 1.12, engine.cruiseSpeed() * 0.5);
+        const eMax = Math.max(0.1, engine.config.folErrLimit, dataEMax) * 1.05;
         const YV = (v: number) => vLane.y0 + vLane.h - (v / vMaxAx) * vLane.h;
-        const eMax = Math.max(engine.config.folErrLimit, 0.1);
         const YE = (e: number) => eLane.y0 + eLane.h / 2 - (e / eMax) * (eLane.h / 2);
 
         // grid
         ctx.strokeStyle = '#18181b'; ctx.lineWidth = 1;
         for (let gx = 0; gx <= 10; gx++) { ctx.beginPath(); ctx.moveTo((gx / 10) * w, 0); ctx.lineTo((gx / 10) * w, h); ctx.stroke(); }
 
-        // iterate ring once, draw all layers via path building
+        // Pass 2: build the layers
         const penRects: [number, number][] = [];
         let penStart: number | null = null;
         const pv: [number, number][] = [], pt: [number, number][] = [], pe: [number, number][] = [];
         const cuts: number[] = [];
-        for (let j = 0; j < s.n; j++) {
-          const idx = (s.i - s.n + j + s.cap) % s.cap;
-          const t = s.t[idx];
-          if (t < tMin || t > tMax) { if (penStart !== null) { penRects.push([penStart, X(t)]); penStart = null; } continue; }
-          const x = X(t);
-          pv.push([x, YV(s.vMat[idx])]);
-          pt.push([x, YV(s.vTip[idx])]);
-          pe.push([x, YE(s.errDeg[idx])]);
-          if (s.pen[idx]) { if (penStart === null) penStart = x; }
-          else if (penStart !== null) { penRects.push([penStart, x]); penStart = null; }
-          if (s.cut[idx]) cuts.push(x);
+        for (const r of rows) {
+          pv.push([r.x, YV(r.vm)]);
+          pt.push([r.x, YV(r.vt)]);
+          pe.push([r.x, YE(r.e)]);
+          if (r.pen) { if (penStart === null) penStart = r.x; }
+          else if (penStart !== null) { penRects.push([penStart, r.x]); penStart = null; }
+          if (r.cut) cuts.push(r.x);
         }
         if (penStart !== null) penRects.push([penStart, w]);
 

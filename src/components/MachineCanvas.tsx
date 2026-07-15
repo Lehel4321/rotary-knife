@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { engine, toMMin } from '../engine/SimulationEngine';
+import { bladeAngle } from '../engine/FB_Cam';
 
 /**
  * Machine animation: side view of the rotary knife line, plus two
@@ -89,8 +90,8 @@ export function MachineCanvas() {
       const T = engine.recipe.thick;
       const yc = R - engine.config.overcut; // drum center above anvil (mm)
       const Theta = cam.Theta;
-      const thB = st.theta - Theta * Math.round(st.theta / Theta); // blade nearest bottom
-      const phi = (((st.D - st.Dref) % cam.L) + cam.L) % cam.L;
+      const thB = bladeAngle(st.theta, Theta); // blade nearest bottom (same wrap as FC_Cut)
+      const phi = engine.camPhase();
       const inSync = phi <= cam.sA || phi >= cam.L - cam.sA;
       const tipLen = engine.tipLen();
 
@@ -164,14 +165,18 @@ export function MachineCanvas() {
         if (p.trim && p.left < axisMax) txt(ctx, (X(p.left) + X(p.left + p.len)) / 2, yA - thickPx - 5, 'TRIM', '#fb923c');
       }
 
-      // next-cut marker on the forming piece
-      if (tipLen < cam.L) {
-        const xc = tipLen - cam.L; // upstream of the knife
-        if (xc > axisMin + 30) {
+      // next-cut marker: the cut fires when the cam phase reaches L, so
+      // the material point that will be cut is (L − φ) upstream of the
+      // knife — NOT (L − tipLen), which is wrong by parkPhi right after
+      // a (re)phase, where the first piece is the short TRIM cut.
+      {
+        const cutIn = cam.L - phi;
+        const xc = -cutIn;
+        if (xc > axisMin + 30 && cutIn > 1) {
           ctx.save(); ctx.setLineDash([3, 3]);
           vline(ctx, X(xc), yA - thickPx - 14, yA + 4, '#71717a', 1);
           ctx.restore();
-          txt(ctx, X(xc), yA - thickPx - 18, 'cut in ' + (cam.L - tipLen).toFixed(0) + 'mm', '#71717a');
+          txt(ctx, X(xc), yA - thickPx - 18, 'cut in ' + cutIn.toFixed(0) + 'mm', '#71717a');
         }
       }
 
@@ -312,6 +317,9 @@ export function MachineCanvas() {
       ctx.save();
       ctx.beginPath(); ctx.rect(bx0, iy0, iw, ih); ctx.clip();
       const face = engine.face;
+      // A stored face keeps the thickness it was CUT at — after a recipe
+      // change the old face must not be rescaled to the new thickness.
+      const faceT = face ? face.thick : T;
       const fy0 = iy0 + 26, fyh = ih - 44;
       const fx = bx0 + iw * 0.42;
       // reference: a perfectly straight face
@@ -321,13 +329,13 @@ export function MachineCanvas() {
       txt(ctx, fx, fy0 + fyh + 12, 'perfect vertical', '#52525b', 'center', 9);
       // depth scale
       txt(ctx, bx0 + 10, fy0 + 4, 'top', '#71717a', 'left', 9);
-      txt(ctx, bx0 + 10, fy0 + fyh, 'bottom −' + T + 'mm', '#71717a', 'left', 9);
+      txt(ctx, bx0 + 10, fy0 + fyh, 'bottom −' + faceT + 'mm', '#71717a', 'left', 9);
       const src = face ? face.pts : engine.trace.pts;
       if (src.length > 2) {
         const span = Math.max(0.08, ...src.map(p => Math.abs(p.x - src[0].x)));
         const mag = Math.min(60 / span, 400) ;
         const FX = (x: number) => fx + (x - src[0].x) * mag;
-        const FY = (d: number) => fy0 + (d / T) * fyh;
+        const FY = (d: number) => fy0 + (d / faceT) * fyh;
         const downEnd = face ? face.downEnd : src.length - 1;
         // up-pass (dim) then down-pass (bright)
         ctx.lineWidth = 2;
@@ -347,7 +355,9 @@ export function MachineCanvas() {
         ctx.stroke();
         txt(ctx, fx, iy0 + 14, '×' + mag.toFixed(0) + ' magnified', '#52525b', 'center', 9);
         if (face) {
-          const g = gradeFace(face.straight);
+          // The phasing TRIM cut is shown but labeled — grading it would
+          // contradict the trim-filtered Straightness tile below.
+          const g = face.trim ? { label: 'TRIM CUT', color: '#fb923c' } : gradeFace(face.straight);
           txt(ctx, bx0 + iw - 10, iy0 + 14, g.label, g.color, 'right', 10);
           txt(ctx, bx0 + iw - 10, fy0 + 16, 'straightness ' + face.straight.toFixed(3) + 'mm', '#e4e4e7', 'right', 10);
           txt(ctx, bx0 + iw - 10, fy0 + 30, 'skew ' + (face.skew >= 0 ? '+' : '') + face.skew.toFixed(3) + 'mm', '#a1a1aa', 'right', 10);

@@ -1,6 +1,7 @@
-import { ReactNode, useEffect, useState } from 'react';
+import { KeyboardEvent, ReactNode, useEffect, useRef, useState } from 'react';
 import { engine, toMMin, toMmSec } from '../engine/SimulationEngine';
 import { recipeBook, blankRecipe, sameRecipe } from '../engine/RecipeBook';
+import { toDeg } from '../engine/units';
 
 const inputCls = "bg-[#18181b] border border-[#27272a] rounded text-[0.875rem] text-[#f4f4f5] px-2 py-1 font-mono focus:outline-none focus:border-[#eab308] disabled:opacity-40 disabled:cursor-not-allowed w-24";
 const labelCls = "text-[0.65rem] uppercase tracking-[0.05em] text-[#71717a] font-semibold mb-1";
@@ -33,37 +34,59 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 }
 
 /**
- * Numeric field with a local DRAFT: while you type, the field is yours —
- * clear it, retype it, nothing snaps back. The value is committed to the
- * engine when you press Enter or leave the field; the engine's validator
- * then clamps it (an empty/invalid draft simply keeps the old value).
- * Committing on every keystroke made the fields uneditable: the engine
- * refused the transient empty value and instantly wrote the old number
- * back into the input.
+ * Draft-then-commit input state, shared by the numeric and text fields:
+ * while a field is focused the draft is yours — clear it, retype it,
+ * nothing snaps back. Commit happens on Enter or focus loss, and ONLY
+ * when the draft actually differs from the seeded value: merely clicking
+ * into a field and leaving must never touch the machine (an unintended
+ * commit rebuilds the cam and re-phases the knife → a phantom TRIM cut).
+ * Escape cancels the draft without committing.
+ */
+function useDraft(seed: string, commit: (draft: string) => void) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const cancelled = useRef(false);
+  return {
+    value: draft !== null ? draft : seed,
+    onFocus: () => { if (draft === null) setDraft(seed); },
+    onChange: (v: string) => setDraft(v),
+    onBlur: () => {
+      if (draft !== null && !cancelled.current && draft !== seed) commit(draft);
+      cancelled.current = false;
+      setDraft(null);
+    },
+    onKeyDown: (e: KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === 'Enter') e.currentTarget.blur();
+      if (e.key === 'Escape') { cancelled.current = true; e.currentTarget.blur(); }
+    },
+  };
+}
+
+/**
+ * Numeric field. A non-numeric or empty draft is NOT committed at all
+ * (and the engine validators additionally keep the previous value for
+ * anything non-finite — double safety).
  */
 function NumInput({ label, value, onCommit, disabled, min, max, step, extra }: {
   label: string; value: number; onCommit: (v: number) => void;
   disabled?: boolean; min?: number; max?: number; step?: number; extra?: ReactNode;
 }) {
-  const [draft, setDraft] = useState<string | null>(null);
-  const commit = () => {
-    if (draft === null) return;
-    onCommit(parseFloat(draft));
-    setDraft(null);
-  };
+  const d = useDraft(String(value), s => {
+    const v = parseFloat(s);
+    if (Number.isFinite(v)) onCommit(v);
+  });
   const input = (
     <input
       id={fieldId(label)}
       className={inputCls}
       type="number"
       inputMode="decimal"
-      value={draft !== null ? draft : String(value)}
+      value={d.value}
       disabled={disabled}
       min={min} max={max} step={step}
-      onChange={e => setDraft(e.target.value)}
-      onFocus={() => { if (draft === null) setDraft(String(value)); }}
-      onBlur={commit}
-      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+      onChange={e => d.onChange(e.target.value)}
+      onFocus={d.onFocus}
+      onBlur={d.onBlur}
+      onKeyDown={d.onKeyDown}
     />
   );
   return (
@@ -77,17 +100,18 @@ function NumInput({ label, value, onCommit, disabled, min, max, step, extra }: {
 function TextInput({ label, value, onCommit, disabled }: {
   label: string; value: string; onCommit: (v: string) => void; disabled?: boolean;
 }) {
-  const [draft, setDraft] = useState<string | null>(null);
+  const d = useDraft(value, onCommit);
   return (
     <Field label={label}>
       <input
         id={fieldId(label)}
         className={inputCls + ' w-full'}
-        value={draft !== null ? draft : value}
+        value={d.value}
         disabled={disabled}
-        onChange={e => setDraft(e.target.value)}
-        onBlur={() => { if (draft !== null) { onCommit(draft); setDraft(null); } }}
-        onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+        onChange={e => d.onChange(e.target.value)}
+        onFocus={d.onFocus}
+        onBlur={d.onBlur}
+        onKeyDown={d.onKeyDown}
       />
     </Field>
   );
@@ -241,7 +265,11 @@ export function ParamsModal({ onClose }: { onClose: () => void }) {
   const [, bump] = useState(0);
   const up = (u: Parameters<typeof engine.updateParams>[0]) => { engine.updateParams(u); bump(x => x + 1); };
   const alpha2 = (2 * engine.contactAlpha() * 180) / Math.PI;
-  const tooSmall = engine.params.syncDeg < alpha2;
+  // Judge the coverage by the window the cam ACTUALLY got — buildCam may
+  // have capped the requested window for a short cut length.
+  const actualWin = toDeg(2 * engine.cam.thetaA);
+  const capped = actualWin < engine.params.syncDeg - 0.5;
+  const tooSmall = actualWin < alpha2 - 0.01;
 
   return (
     <Shell title="Process parameters" hint={locked ? '🔒 Machine running — stop to edit.' : 'Values apply when you press Enter or leave a field. The sync window is the knife-angle range where the blade speed is locked to the material.'} onClose={onClose}>
@@ -252,7 +280,7 @@ export function ParamsModal({ onClose }: { onClose: () => void }) {
           min={1} max={3} step={0.05} onCommit={v => up({ outFac: v })} />
       </div>
       <div className={`mt-4 text-[0.7rem] font-mono ${tooSmall ? 'text-orange-400 font-semibold' : 'text-zinc-500'}`}>
-        {tooSmall ? '⚠ ' : ''}sync window {engine.params.syncDeg}° vs blade contact {alpha2.toFixed(1)}° at {engine.recipe.thick}mm
+        {tooSmall ? '⚠ ' : ''}sync window {actualWin.toFixed(0)}°{capped ? ` (capped from ${engine.params.syncDeg}° by the cut length)` : ''} vs blade contact {alpha2.toFixed(1)}° at {engine.recipe.thick}mm
         {tooSmall ? ' — the blade will leave sync INSIDE the material.' : ' — contact fully covered ✓'}
       </div>
     </Shell>

@@ -28,16 +28,10 @@ export function FC_Safety(db: SimulationEngine) {
   const st = db.state;
 
   // Safety chain open while the machine is running -> trip immediately.
+  // Drive power gone: both axes halt where they are (blade possibly
+  // inside the material — that is exactly what needsReset is for).
   if (st.running && (st.estop || st.guardOpen)) {
-    st.running = false;
-    st.needsReset = true;
-    st.stopReq = false;
-    st.braking = false;
-    // Drive power gone: both axes halt where they are (blade possibly
-    // inside the material — that is exactly what needsReset is for).
-    st.v = 0;
-    st.a = 0;
-    st.omega = 0;
+    db.safeStop(true);
     db.notify();
   }
 

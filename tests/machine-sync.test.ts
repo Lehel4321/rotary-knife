@@ -66,6 +66,11 @@ function runMonitored(db: SimulationEngine, scans: number): Monitor {
   return m;
 }
 
+/** Run the machine headless for a number of 1 ms scans (no monitoring). */
+function run(db: SimulationEngine, scans: number) {
+  for (let i = 0; i < scans; i++) OB1_CyclicUpdate(db, SCAN_TIME);
+}
+
 function makeMachine(over: {
   len?: number; spd?: number; thick?: number; syncMode?: 'constant' | 'comp'; ratio?: number;
   syncDeg?: number; knives?: 1 | 2; axAmax?: number; axJerk?: number; feasFrac?: number;
@@ -160,6 +165,88 @@ describe('motor limit adherence + sync contract across the recipe space', () => 
     expect(s.meanStraight).toBeGreaterThan(1);
     // within 15 % of the analytic prediction R·max|sinθ − θ| profile
     expect(Math.abs(s.meanStraight - db.cam.predictStraight) / db.cam.predictStraight).toBeLessThan(0.15);
+  });
+
+  it('graceful stop always terminates, even at 180 m/min (discrete-landing regression)', () => {
+    // The brake ramp may land a few mm short of the park target at high
+    // line speed; completion must gate on STANDSTILL, not on a tight
+    // position tolerance — the old 1.5 mm gate deadlocked 2/3 of stops.
+    for (let trial = 0; trial < 12; trial++) {
+      const db = new SimulationEngine();
+      db.updateConfig({ knifeWmax: 200, knifeAmax: 20000 });
+      db.updateRecipe({ spd: 3000 });
+      db.setControlOn();
+      db.setRun(true);
+      for (let i = 0; i < 2000 + trial * 337; i++) OB1_CyclicUpdate(db, SCAN_TIME);
+      db.requestStop();
+      for (let i = 0; i < 30000 && db.state.running; i++) OB1_CyclicUpdate(db, SCAN_TIME);
+      expect(db.state.running).toBe(false);
+      expect(db.state.v).toBe(0);
+      expect(db.state.braking).toBe(false);
+      const thB = Math.abs(db.state.theta - db.cam.Theta * Math.round(db.state.theta / db.cam.Theta));
+      expect(thB).toBeGreaterThan(db.contactAlpha());
+    }
+  });
+
+  it('changing line speed or name while stopped keeps the cam phase (no extra trim)', () => {
+    const db = new SimulationEngine();
+    db.setControlOn();
+    db.setRun(true);
+    run(db, 3000);
+    db.requestStop();
+    run(db, 8000);
+    expect(db.state.running).toBe(false);
+    db.updateRecipe({ spd: 500, name: 'RENAMED' });
+    db.setRun(true);
+    run(db, 8000);
+    expect(db.state.trims).toBe(1); // no re-phase for a speed/name change
+    for (const r of db.log.filter(x => !x.trim)) expect(Math.abs(r.err)).toBeLessThan(0.05);
+  });
+
+  it('invalid values keep the previous setting (params/config commit contract)', () => {
+    const db = new SimulationEngine();
+    db.updateParams({ syncDeg: 120 });
+    db.updateParams({ syncDeg: NaN });
+    expect(db.params.syncDeg).toBe(120);
+    db.updateConfig({ knifeR: 200 });
+    db.updateConfig({ knifeR: NaN });
+    expect(db.config.knifeR).toBe(200);
+    db.updateConfig({ axVmax: 5000 });
+    db.updateConfig({ axVmax: NaN });
+    expect(db.config.axVmax).toBe(5000);
+  });
+
+  it('out-feed pieces move with the ACTUAL line speed, not the commanded cruise', () => {
+    const db = makeMachine({ axAmax: 500, axJerk: 5000 }); // slow ramp
+    run(db, 1400); // trim cut fires mid-ramp (park phase 200 mm)
+    expect(db.pieces.length).toBeGreaterThan(0);
+    expect(db.state.v).toBeLessThan(db.cruiseSpeed() * 0.95); // still ramping
+    const p = db.pieces[db.pieces.length - 1];
+    const l0 = p.left;
+    const v0 = db.state.v;
+    run(db, 100);
+    const pieceV = (p.left - l0) / 0.1;
+    expect(pieceV).toBeLessThanOrEqual(db.state.v * db.params.outFac + 1);
+    expect(pieceV).toBeGreaterThanOrEqual(v0 * db.params.outFac * 0.9);
+  });
+
+  it('interrupted face measurements are marked lost, campaign meters accumulate', () => {
+    const db = makeMachine({ thick: 20 });
+    // stop the machine exactly while the blade is inside the material
+    for (let i = 0; i < 60000 && !db.penetrating; i++) OB1_CyclicUpdate(db, SCAN_TIME);
+    expect(db.penetrating).toBe(true);
+    const fed = db.state.matCut;
+    expect(fed).toBeGreaterThan(0);
+    db.pressEStop();
+    db.releaseEStop();
+    db.setControlOn(); // clears the machine
+    const pending = db.log.filter(r => r.straight === null);
+    for (const r of pending) expect(r.lost).toBe(true);
+    expect(db.state.matCut).toBe(fed); // campaign total survives the clear
+    // a lost record never receives a later face
+    db.setRun(true);
+    run(db, 6000);
+    for (const r of db.log.filter(x => x.lost)) expect(r.straight).toBeNull();
   });
 
   it('deterministic: two identical runs produce identical logs', () => {

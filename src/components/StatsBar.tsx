@@ -44,7 +44,7 @@ export function StatsBar() {
       <Tile label="Max feasible" value={toMMin(engine.vFeasibleLine()).toFixed(0)} sub="m/min (knife limit)" cls="text-cyan-400" />
       <Tile label="Cuts" value={st.cuts} sub={st.trims + ' trim'} cls="text-green-500" />
       <Tile label="Rate" value={stats.rate > 0 ? stats.rate.toFixed(1) : engine.nominalRate().toFixed(1)} sub={stats.rate > 0 ? 'measured /min' : 'nominal /min'} cls="text-yellow-500" />
-      <Tile label="Run time" value={fmtTime(st.runTime)} sub={(st.runTime * engine.cruiseSpeed() / 1000 / 60).toFixed(0) + ' m cut'} />
+      <Tile label="Run time" value={fmtTime(st.runTime)} sub={(st.matCut / 1000).toFixed(1) + ' m cut'} />
       <Tile label="Length error" value={stats.last ? (stats.last.err >= 0 ? '+' : '') + stats.last.err.toFixed(3) : '—'} sub={stats.n > 1 ? 'σ ' + stats.stdErr.toFixed(3) + ' · max ' + stats.maxAbsErr.toFixed(3) : 'mm'} cls={stats.maxAbsErr > 0.5 ? 'text-orange-400' : 'text-green-400'} />
       <Tile label="Straightness" value={stats.lastFace?.straight != null ? stats.lastFace.straight.toFixed(3) : '—'} sub={grade ? grade.label + ' · max ' + stats.maxStraight.toFixed(2) : 'mm face deviation'} />
     </div>

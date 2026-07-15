@@ -58,9 +58,9 @@ export function CutLog() {
                   <td className="py-1 pr-3">{r.t.toFixed(2)}</td>
                   <td className="py-1 pr-3">{r.len.toFixed(3)}</td>
                   <td className={`py-1 pr-3 ${Math.abs(r.err) > 0.5 ? 'text-orange-400' : 'text-green-400'}`}>{(r.err >= 0 ? '+' : '') + r.err.toFixed(3)}</td>
-                  <td className="py-1 pr-3" style={{ color: g?.color }}>{r.straight != null ? r.straight.toFixed(3) : '…'}</td>
-                  <td className="py-1 pr-3">{r.skew != null ? (r.skew >= 0 ? '+' : '') + r.skew.toFixed(3) : '…'}</td>
-                  <td className="py-1 pr-3">{r.drag != null ? r.drag.toFixed(3) : '…'}</td>
+                  <td className="py-1 pr-3" style={{ color: g?.color }}>{r.straight != null ? r.straight.toFixed(3) : r.lost ? 'n/a' : '…'}</td>
+                  <td className="py-1 pr-3">{r.skew != null ? (r.skew >= 0 ? '+' : '') + r.skew.toFixed(3) : r.lost ? 'n/a' : '…'}</td>
+                  <td className="py-1 pr-3">{r.drag != null ? r.drag.toFixed(3) : r.lost ? 'n/a' : '…'}</td>
                   <td className={`py-1 pr-3 ${r.folErrMax > engine.config.folErrLimit * 0.5 ? 'text-orange-400' : ''}`}>{r.folErrMax.toFixed(3)}</td>
                   <td className="py-1 pr-3">{toMMin(r.vLine).toFixed(1)}</td>
                 </tr>

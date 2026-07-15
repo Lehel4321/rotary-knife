@@ -88,12 +88,16 @@ export function FC_Feeder(db: SimulationEngine, dt: number) {
   let dD = st.v * dt;
   if (st.braking) dD = Math.min(dD, Math.max(0, st.brakeD - st.D));
   st.D += dD;
+  st.matCut += dD; // campaign total, survives clearSequence (like runTime)
 
-  // Network 4: Standstill reached -> machine idle. The committed S-curve
-  // lands on the park target (at most one scan of travel past it, which
-  // the position cap absorbs); 1.5 mm of tolerance is < 0.1° of knife
-  // angle inside the park region.
-  if (st.braking && st.stopCommit && st.v <= 0.001 && st.brakeD - st.D <= 1.5) {
+  // Network 4: Standstill reached -> machine idle. STANDSTILL is the
+  // completion condition, not the park position: the discrete brake ramp
+  // may land a few mm short of brakeD at high line speed (up to ~v·dt/2
+  // integration deficit — 3.2 mm at 180 m/min), which is still well
+  // inside the park region (< 0.2° of knife angle per mm). Gating on a
+  // tight position tolerance instead deadlocks the stop: v = 0 short of
+  // target and the latched ramp can never close the gap.
+  if (st.braking && st.stopCommit && st.v <= 0.001) {
     st.v = 0;
     st.a = 0;
     st.braking = false;

@@ -1,6 +1,10 @@
 import { Recipe, ProcessParams, MachineConfig, MachineState, Piece, CutRecord, CutFace, FacePoint } from '../types';
 import { CamProfile, buildCam, contactHalfAngle, suggestRatio } from './FB_Cam';
 import { OB1_CyclicUpdate } from './OB1_Main';
+import { MM_S_PER_M_MIN, toMMin, toMmSec } from './units';
+
+// Re-exported so existing consumers keep one import site for engine + units
+export { MM_S_PER_M_MIN, toMMin, toMmSec };
 
 /**
  * Fixed PLC scan time in seconds (1 ms). OB1 is always executed with
@@ -9,13 +13,17 @@ import { OB1_CyclicUpdate } from './OB1_Main';
  */
 export const SCAN_TIME = 0.001;
 
-/** Unit conversion for the operator-facing line speed: 60 m/min = 1000 mm/s. */
-export const MM_S_PER_M_MIN = 1000 / 60;
-export const toMMin = (mmPerSec: number) => mmPerSec / MM_S_PER_M_MIN;
-export const toMmSec = (mPerMin: number) => mPerMin * MM_S_PER_M_MIN;
-
 /** Scope ring buffer size: 1 kHz × 6 s of machine time. */
 const SCOPE_CAP = 6000;
+
+/**
+ * Setpoint validation: a finite value is clamped to [min, max]; anything
+ * else (empty field → NaN) KEEPS the previous value. Every recipe /
+ * params / config field goes through this — an invalid entry must never
+ * snap a setting to an unrelated hardcoded default.
+ */
+const num = (v: number | undefined, prev: number, min: number, max: number) =>
+  Number.isFinite(v) ? Math.min(max, Math.max(min, v as number)) : prev;
 
 /**
  * DB1: Global Machine Data Block (and HMI Bridge)
@@ -58,7 +66,7 @@ export class SimulationEngine {
     D: 0, v: 0, a: 0,
     theta: 0, omega: 0, thetaSet: 0, folErr: 0, knifeFault: false,
     Dref: 0, DlastCut: 0, firstCut: true,
-    cuts: 0, trims: 0,
+    cuts: 0, trims: 0, matCut: 0,
   };
 
   // --- Data Block: Cam profile (rebuilt on recipe/params/config change) ---
@@ -126,6 +134,12 @@ export class SimulationEngine {
 
   /** Length of material currently past the knife (the forming piece). */
   public tipLen() { return this.state.D - this.state.DlastCut; }
+
+  /** Current cam master phase φ ∈ [0, L) — the cut fires at φ = 0. */
+  public camPhase() {
+    const L = this.cam.L;
+    return (((this.state.D - this.state.Dref) % L) + L) % L;
+  }
 
   /**
    * Aggregated test-campaign statistics over the logged (non-trim) cuts —
@@ -197,6 +211,24 @@ export class SimulationEngine {
     this.cam = buildCam(this.recipe, this.params, this.config);
   }
 
+  /** Identity of the cam CURVE — everything that defines θ(φ) geometrically. */
+  private camKey() {
+    const c = this.cam;
+    return JSON.stringify([c.L, c.Theta, c.mode, c.k, c.R, c.thetaA, c.sA, c.parkPhi, c.dwell]);
+  }
+
+  /**
+   * Rebuild the cam and re-phase the knife ONLY if the curve actually
+   * changed. Editing the line speed, the thickness or the recipe name
+   * must never cost a re-phase (and therefore a TRIM cut) — only changes
+   * to the cut geometry (length, mode, ratio, sync window, drum) do.
+   */
+  private applyCamChange() {
+    const before = this.camKey();
+    this.rebuildCam();
+    if (this.camKey() !== before) this.rephase();
+  }
+
   /**
    * Re-phase the knife to the cam: knife to the PARK position, cam zero
    * reference anchored so the current master position sits exactly on
@@ -229,12 +261,37 @@ export class SimulationEngine {
   private clearSequence() {
     const st = this.state;
     st.D = 0; st.v = 0; st.a = 0;
-    st.stopReq = false; st.braking = false; st.brakeD = 0;
+    st.stopReq = false; st.braking = false; st.stopCommit = false; st.brakeD = 0;
     st.knifeFault = false;
     this.pieces = [];
     this.face = null;
     this.scanAcc = 0;
+    // A cut whose face was still being measured can never complete now
+    // (the blade froze inside the material and the machine is cleared) —
+    // mark it so the log shows "n/a" instead of "measuring…" forever.
+    for (let i = this.log.length - 1; i >= 0 && i >= this.log.length - 3; i--) {
+      const r = this.log[i];
+      if (r.straight === null) r.lost = true;
+    }
     this.rephase();
+  }
+
+  /**
+   * Category-0 drive stop — the ONE place that takes both drives off and
+   * clears every motion latch. Every trip path (E-Stop, guard, control
+   * off, hard stop, knife fault, safety backstop) calls this; a latch
+   * added here is cleared on all of them at once.
+   */
+  public safeStop(markReset: boolean) {
+    const st = this.state;
+    if (markReset && st.running) st.needsReset = true;
+    st.running = false;
+    st.stopReq = false;
+    st.braking = false;
+    st.stopCommit = false;
+    st.v = 0;
+    st.a = 0;
+    st.omega = 0;
   }
 
   // --- HMI Commands: SAFETY (basic safety control functions) ---
@@ -258,25 +315,17 @@ export class SimulationEngine {
 
   public setControlOff() {
     if (!this.state.controlOn) return;
-    if (this.state.running) this.state.needsReset = true;
+    this.safeStop(true);
     this.state.controlOn = false;
-    this.state.running = false;
-    this.state.stopReq = false;
-    this.state.braking = false;
-    this.state.v = 0; this.state.a = 0; this.state.omega = 0;
     this.notify();
   }
 
   /** E-Stop PRESSED (latches). Category 0: drive power gone instantly. */
   public pressEStop() {
     if (this.state.estop) return;
-    if (this.state.running) this.state.needsReset = true;
+    this.safeStop(true);
     this.state.estop = true;
     this.state.controlOn = false;
-    this.state.running = false;
-    this.state.stopReq = false;
-    this.state.braking = false;
-    this.state.v = 0; this.state.a = 0; this.state.omega = 0;
     this.notify();
   }
 
@@ -293,13 +342,7 @@ export class SimulationEngine {
    */
   public toggleGuard() {
     this.state.guardOpen = !this.state.guardOpen;
-    if (this.state.guardOpen && this.state.running) {
-      this.state.running = false;
-      this.state.needsReset = true;
-      this.state.stopReq = false;
-      this.state.braking = false;
-      this.state.v = 0; this.state.a = 0; this.state.omega = 0;
-    }
+    if (this.state.guardOpen && this.state.running) this.safeStop(true);
     this.notify();
   }
 
@@ -314,16 +357,14 @@ export class SimulationEngine {
     if (on && (!this.state.controlOn || this.state.guardOpen || this.state.knifeFault)) return;
     if (!on) {
       // Hard stop (internal/tests): drives off where they are
-      this.state.running = false;
-      this.state.stopReq = false;
-      this.state.braking = false;
-      this.state.v = 0; this.state.a = 0; this.state.omega = 0;
+      this.safeStop(false);
       this.notify();
       return;
     }
     this.state.running = true;
     this.state.stopReq = false;
     this.state.braking = false;
+    this.state.stopCommit = false;
     this.notify();
   }
 
@@ -349,15 +390,15 @@ export class SimulationEngine {
 
   /** Master reset: clears the machine AND the whole test campaign. */
   public reset() {
-    this.state.running = false;
+    this.safeStop(false);
     this.state.needsReset = false;
     this.state.knifeFault = false;
-    this.state.stopReq = false;
-    this.state.braking = false;
+    this.state.brakeD = 0;
     this.state.simTime = 0;
     this.state.runTime = 0;
     this.state.cuts = 0;
     this.state.trims = 0;
+    this.state.matCut = 0;
     this.log = [];
     this.scope.n = 0; this.scope.i = 0;
     this.state.D = 0; this.state.v = 0; this.state.a = 0;
@@ -372,23 +413,23 @@ export class SimulationEngine {
   // --- RECIPE / PARAMS / CONFIG (with interlocks) ---
 
   /**
-   * Change product data. INTERLOCK: refused while running. Rebuilds the
-   * cam and re-phases the knife (the next cut is a new reference edge).
+   * Change product data. INTERLOCK: refused while running. An unchanged
+   * result is a no-op; a changed CAM CURVE (length, mode, ratio) also
+   * re-phases the knife (the next cut is a new reference edge).
    */
   public updateRecipe(updates: Partial<Recipe>): boolean {
     if (this.state.running) return false;
     const prev = this.recipe;
-    const num = (v: number | undefined, fallback: number, min: number, max: number) =>
-      Number.isFinite(v) && (v as number) > 0 ? Math.min(max, Math.max(min, v as number)) : fallback;
-    this.recipe = { ...prev, ...updates };
-    this.recipe.name = (this.recipe.name || 'TEST').toUpperCase().slice(0, 24);
-    this.recipe.len = num(this.recipe.len, prev.len, 50, 5000);
-    this.recipe.spd = num(this.recipe.spd, prev.spd, 10, 10000);
-    this.recipe.thick = num(this.recipe.thick, prev.thick, 0.5, this.config.maxThick);
-    this.recipe.ratio = num(this.recipe.ratio, prev.ratio, 0.8, 1.3);
-    if (this.recipe.syncMode !== 'constant' && this.recipe.syncMode !== 'comp') this.recipe.syncMode = 'constant';
-    this.rebuildCam();
-    this.rephase();
+    const next = { ...prev, ...updates };
+    next.name = (next.name || 'TEST').toUpperCase().slice(0, 24);
+    next.len = num(next.len, prev.len, 50, 5000);
+    next.spd = num(next.spd, prev.spd, 10, 10000);
+    next.thick = num(next.thick, prev.thick, 0.5, this.config.maxThick);
+    next.ratio = num(next.ratio, prev.ratio, 0.8, 1.3);
+    if (next.syncMode !== 'constant' && next.syncMode !== 'comp') next.syncMode = 'constant';
+    if (JSON.stringify(next) === JSON.stringify(prev)) return true; // no actual change
+    this.recipe = next;
+    this.applyCamChange();
     this.notify();
     return true;
   }
@@ -396,11 +437,13 @@ export class SimulationEngine {
   /** Process tuning. INTERLOCK: refused while running (the sync window reshapes the cam). */
   public updateParams(updates: Partial<ProcessParams>): boolean {
     if (this.state.running) return false;
-    this.params = { ...this.params, ...updates };
-    this.params.syncDeg = Math.min(140, Math.max(10, this.params.syncDeg || 70));
-    this.params.outFac = Math.min(3, Math.max(1, this.params.outFac || 1.15));
-    this.rebuildCam();
-    this.rephase();
+    const prev = this.params;
+    const next = { ...prev, ...updates };
+    next.syncDeg = num(next.syncDeg, prev.syncDeg, 10, 140);
+    next.outFac = num(next.outFac, prev.outFac, 1, 3);
+    if (JSON.stringify(next) === JSON.stringify(prev)) return true;
+    this.params = next;
+    this.applyCamChange();
     this.notify();
     return true;
   }
@@ -408,21 +451,22 @@ export class SimulationEngine {
   /** Physical machine build. INTERLOCK: refused while the control is ON. */
   public updateConfig(updates: Partial<MachineConfig>): boolean {
     if (this.state.controlOn) return false;
-    this.config = { ...this.config, ...updates };
-    const c = this.config;
-    c.knifeR = Math.min(400, Math.max(40, c.knifeR || 100));
+    const prev = this.config;
+    const c = { ...prev, ...updates };
+    c.knifeR = num(c.knifeR, prev.knifeR, 40, 400);
     c.knives = c.knives === 2 ? 2 : 1;
-    c.knifeWmax = Math.min(200, Math.max(2, c.knifeWmax || 40));
-    c.knifeAmax = Math.min(20000, Math.max(20, c.knifeAmax || 800));
-    c.folErrLimit = Math.min(30, Math.max(0.5, c.folErrLimit || 5));
-    c.axVmax = Math.max(10, c.axVmax || 3000);
-    c.axAmax = Math.max(100, c.axAmax || 30000);
-    c.axJerk = Math.max(1000, c.axJerk || 300000);
-    c.overcut = Math.min(2, Math.max(0, Number.isFinite(c.overcut) ? c.overcut : 0.3));
+    c.knifeWmax = num(c.knifeWmax, prev.knifeWmax, 2, 200);
+    c.knifeAmax = num(c.knifeAmax, prev.knifeAmax, 20, 20000);
+    c.folErrLimit = num(c.folErrLimit, prev.folErrLimit, 0.5, 30);
+    c.axVmax = num(c.axVmax, prev.axVmax, 10, 1e6);
+    c.axAmax = num(c.axAmax, prev.axAmax, 100, 1e8);
+    c.axJerk = num(c.axJerk, prev.axJerk, 1000, 1e10);
+    c.overcut = num(c.overcut, prev.overcut, 0, 2);
     c.maxThick = 20; // mechanical limit of this machine
+    if (JSON.stringify(c) === JSON.stringify(prev)) return true;
+    this.config = c;
     if (this.recipe.thick > c.maxThick) this.recipe.thick = c.maxThick;
-    this.rebuildCam();
-    this.rephase();
+    this.applyCamChange();
     this.notify();
     return true;
   }

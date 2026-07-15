@@ -40,14 +40,8 @@ export function FC_Knife(db: SimulationEngine, dt: number) {
 
   // Network 3: Following-error monitor (drive fault, latching).
   if (Math.abs(st.folErr) > (cfg.folErrLimit * Math.PI) / 180) {
+    db.safeStop(true);
     st.knifeFault = true;
-    st.needsReset = true;
-    st.running = false;
-    st.stopReq = false;
-    st.braking = false;
-    st.v = 0;
-    st.a = 0;
-    st.omega = 0;
     db.notify();
   }
 }

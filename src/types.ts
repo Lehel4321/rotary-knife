@@ -81,6 +81,12 @@ export interface CutRecord {
   skew: number | null;     // lateral offset face bottom vs face top on the down-pass (mm, sign = lean direction)
   drag: number | null;     // loop width between blade down-pass and up-pass at the surface (mm) — blade rubbing the face
   folErrMax: number;  // peak knife following error during this cut window (deg)
+  /**
+   * The face measurement can never complete: an interruption (E-Stop,
+   * guard, fault) froze the blade inside the material and the machine
+   * was cleared. Distinguishes "n/a" from "still being measured".
+   */
+  lost?: boolean;
 }
 
 /** One recorded point of the blade tip travelling through the material (material frame). */
@@ -96,6 +102,8 @@ export interface CutFace {
   straight: number;
   skew: number;
   drag: number;
+  thick: number;       // material thickness this face was cut at (mm) — the depth scale of pts
+  trim: boolean;       // face belongs to the phasing TRIM cut (shown, but labeled)
 }
 
 /** A cut-off piece travelling on the out-feed belt. */
@@ -151,4 +159,6 @@ export interface MachineState {
   // --- Test counters ---
   cuts: number;       // good (non-trim) cuts this run
   trims: number;
+  /** Material actually fed through the knife this campaign (mm) — accumulated from real axis travel. */
+  matCut: number;
 }
