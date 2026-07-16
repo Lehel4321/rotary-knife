@@ -85,9 +85,12 @@ export class SimulationEngine {
   public scopeCut = false;
 
   // --- Data Block: Scope ring buffer (1 kHz machine-time recording) ---
+  // The time axis is Float64: with Float32 the 1 ms sample spacing falls
+  // below the float resolution after ~2.5 h of machine time and the
+  // scope time base aliases — endurance runs are exactly this rig's job.
   public scope = {
     cap: SCOPE_CAP, n: 0, i: 0,
-    t: new Float32Array(SCOPE_CAP),
+    t: new Float64Array(SCOPE_CAP),
     vMat: new Float32Array(SCOPE_CAP),
     vTip: new Float32Array(SCOPE_CAP),
     errDeg: new Float32Array(SCOPE_CAP),

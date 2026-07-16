@@ -13,7 +13,7 @@ export function ScopePanel({ onClose }: { onClose: () => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [span, setSpan] = useState(2); // seconds of machine time
   const [paused, setPaused] = useState(false);
-  const frozen = useRef<{ t: Float32Array; vMat: Float32Array; vTip: Float32Array; errDeg: Float32Array; pen: Uint8Array; cut: Uint8Array; n: number; i: number; cap: number } | null>(null);
+  const frozen = useRef<{ t: Float64Array; vMat: Float32Array; vTip: Float32Array; errDeg: Float32Array; pen: Uint8Array; cut: Uint8Array; n: number; i: number; cap: number } | null>(null);
 
   useEffect(() => {
     if (paused) {
@@ -122,8 +122,14 @@ export function ScopePanel({ onClose }: { onClose: () => void }) {
         ctx.setLineDash([]);
         ctx.beginPath(); ctx.moveTo(0, YE(0)); ctx.lineTo(w, YE(0)); ctx.stroke();
 
+        // Draw order matters: during the sync window the tip velocity is
+        // EXACTLY the material velocity — a same-width material line drawn
+        // second paints pixel-perfectly over the tip trace and the knife
+        // signal appears to drop out for the whole cut window. Material
+        // first and wide, tip thin on top: the lock shows as red riding
+        // centered inside a blue halo.
+        poly(pv, '#3b82f6', 3.5);
         poly(pt, '#ef4444', 1.5);
-        poly(pv, '#3b82f6', 1.5);
         poly(pe, '#f59e0b', 1);
 
         ctx.font = '11px ui-monospace'; ctx.textAlign = 'left';

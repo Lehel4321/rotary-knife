@@ -35,6 +35,11 @@ export function FC_Knife(db: SimulationEngine, dt: number) {
   const wCmd = Math.max(-cfg.knifeWmax, Math.min(cfg.knifeWmax, wDes));
   const dwMax = cfg.knifeAmax * dt;
   st.omega += Math.max(-dwMax, Math.min(dwMax, wCmd - st.omega));
+  // A rotary knife axis is ONE-DIRECTIONAL: when the graceful stop pins
+  // the master at the park target, the follower would otherwise command
+  // a tiny reverse to pull back its last scan of overshoot — a real
+  // knife drive rides the sub-0.1° overshoot out instead of reversing.
+  if (st.omega < 0) st.omega = 0;
   st.theta += st.omega * dt;
   st.folErr = st.thetaSet - st.theta;
 

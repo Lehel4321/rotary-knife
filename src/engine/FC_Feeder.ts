@@ -29,6 +29,7 @@ export function FC_Feeder(db: SimulationEngine, dt: number) {
   const J = db.config.axJerk;
   const st = db.state;
   const cam = db.cam;
+  const vPrev = st.v; // for trapezoidal position integration (Network 3)
 
   // Network 1: Velocity setpoint. Continuous line speed (capped at axis Vmax).
   let vt = db.cruiseSpeed();
@@ -56,26 +57,46 @@ export function FC_Feeder(db: SimulationEngine, dt: number) {
     if (st.stopCommit) vt = 0;
   }
 
-  // Network 2: Jerk-limited velocity tracking (S-curve) with one-step
-  // lookahead: apply +J only if the settle velocity (velocity reached
-  // after ramping the acceleration back to zero) stays at or below the
-  // setpoint AFTER this scan — so the axis can never overshoot the
-  // commanded velocity. Trapezoidal integration keeps the discrete
-  // profile on the exact S-curve.
+  // Network 2: Jerk-limited velocity tracking (S-curve). Bang-bang jerk
+  // with one-step lookahead, plus a FRACTIONAL jerk step on the crossing
+  // scan: the settle velocity (velocity reached after ramping the
+  // acceleration to zero) is placed EXACTLY on the setpoint, and from
+  // then on the unwind branch conserves it scan by scan — trapezoidal
+  // integration conserves settle along constant jerk exactly — so the
+  // axis rides the analytic S-curve parabola into every setpoint instead
+  // of quantizing the jerk flip to whole scans (which drifted the ramp
+  // ~0.7 % off the MotionProfileSolver profile and landed brake ramps
+  // millimeters off the committed stopping distance).
   if (st.v !== vt || st.a !== 0) {
+    const settleAfter = (v: number, a: number) => v + (a * Math.abs(a)) / (2 * J);
     const aUp = Math.min(A, st.a + J * dt);
     const vUp = st.v + ((st.a + aUp) / 2) * dt;
-    const settleUp = vUp + (aUp * Math.abs(aUp)) / (2 * J);
-    if (settleUp <= vt) {
+    const aDn = Math.max(-A, st.a - J * dt);
+    const vDn = st.v + ((st.a + aDn) / 2) * dt;
+    if (settleAfter(vUp, aUp) <= vt) {
+      // building toward the target (or easing off an overbraked state)
       st.a = aUp;
       st.v = vUp;
-    } else {
-      const aDn = Math.max(-A, st.a - J * dt);
-      st.v += ((st.a + aDn) / 2) * dt;
+    } else if (settleAfter(vDn, aDn) >= vt) {
+      // unwinding toward the target — conserves settle once it equals vt
       st.a = aDn;
+      st.v = vDn;
+    } else {
+      // Crossing scan: both full steps straddle the setpoint. Solve the
+      // fractional target acceleration a' with settleAfter(v', a') = vt:
+      //   a' ≥ 0:  a'² + J·dt·a' + 2J(v + a·dt/2 − vt) = 0
+      //   a' ≤ 0:  a'² − J·dt·a' − 2J(v + a·dt/2 − vt) = 0
+      const B = J * dt;
+      const K = 2 * J * (st.v + (st.a * dt) / 2 - vt);
+      let aNew = st.v + (st.a * dt) / 2 <= vt
+        ? (-B + Math.sqrt(B * B - 4 * K)) / 2
+        : (B - Math.sqrt(B * B + 4 * K)) / 2;
+      aNew = Math.max(Math.max(-A, st.a - B), Math.min(Math.min(A, st.a + B), aNew));
+      st.v += ((st.a + aNew) / 2) * dt;
+      st.a = aNew;
     }
-    // Snap onto the setpoint at ramp end (consumes at most 2 scans'
-    // worth of jerk once, then the axis cruises exactly at vt).
+    // Snap onto the setpoint at ramp end (float dust only — the
+    // fractional step already lands the profile on vt analytically).
     if (Math.abs(st.v - vt) <= J * dt * dt && Math.abs(st.a) <= 1.001 * J * dt) {
       st.v = vt;
       st.a = 0;
@@ -83,9 +104,12 @@ export function FC_Feeder(db: SimulationEngine, dt: number) {
     if (st.v < 0) { st.v = 0; st.a = 0; } // the line never runs backwards
   }
 
-  // Network 3: Advance the encoder position. While braking, never
-  // overshoot the park target — the knife would leave its park position.
-  let dD = st.v * dt;
+  // Network 3: Advance the encoder position — trapezoidal, consistent
+  // with the velocity integration (a rectangle rule here under-travels
+  // every brake ramp by v·dt/2, which is millimeters at high line
+  // speed). While braking, never overshoot the park target — the knife
+  // would leave its park position.
+  let dD = ((vPrev + st.v) / 2) * dt;
   if (st.braking) dD = Math.min(dD, Math.max(0, st.brakeD - st.D));
   st.D += dD;
   st.matCut += dD; // campaign total, survives clearSequence (like runTime)
