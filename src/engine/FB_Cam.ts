@@ -146,6 +146,23 @@ function polyMonotone(c: number[], S: number): boolean {
   return true;
 }
 
+/**
+ * Peak knife acceleration demand (rad/s²) while the feed runs its
+ * jerk-limited S-curve from standstill to cruise speed v (the brake ramp
+ * is its mirror image). At line speed u on the way up the S-curve has
+ * a(u) = min(A, √(2Ju), √(2J(v−u))), and at cam point (θ', θ'') the knife
+ * needs |θ''|·u² + |θ'|·a(u). `pts` = the cam's [|θ'|, |θ''|] samples.
+ */
+function rampDemand(v: number, pts: number[][], A: number, J: number): number {
+  let peak = 0;
+  for (let i = 0; i <= 48; i++) {
+    const u = (i / 48) * v;
+    const a = Math.min(A, Math.sqrt(2 * J * u), Math.sqrt(2 * J * (v - u)));
+    for (const [s, c] of pts) peak = Math.max(peak, c * u * u + s * a);
+  }
+  return peak;
+}
+
 export function buildCam(recipe: Recipe, params: ProcessParams, config: MachineConfig): CamProfile {
   const warnings: string[] = [];
   const R = config.knifeR;
@@ -221,20 +238,43 @@ export function buildCam(recipe: Recipe, params: ProcessParams, config: MachineC
   // --- Dynamics demand and feasible line speed ---
   // Steady line speed v: knife ω = dθ/dφ·v, knife α = d²θ/dφ²·v².
   let maxSlope = 0, maxAcc = 0;
+  const samples: number[][] = [];
   for (let i = 0; i < 1024; i++) {
     const [, dth, ddth] = evalCam(cam, (i / 1024) * L);
     if (Math.abs(dth) > maxSlope) maxSlope = Math.abs(dth);
     if (Math.abs(ddth) > maxAcc) maxAcc = Math.abs(ddth);
+    samples.push([Math.abs(dth), Math.abs(ddth)]);
   }
   cam.maxSlope = maxSlope;
   cam.maxAcc = maxAcc;
-  cam.vFeasible = Math.min(
+  const vSteady = Math.min(
     maxSlope > 1e-12 ? config.knifeWmax / maxSlope : Infinity,
     maxAcc > 1e-12 ? Math.sqrt(config.knifeAmax / maxAcc) : Infinity,
   );
+  // The line never runs at speed without first ramping there: while the
+  // feed accelerates, the knife also needs α = dθ/dφ · a_line on top of
+  // the steady demand. On short cuts (steep cam) that ramp term alone can
+  // exceed αmax — "feasible" speeds then fault the knife on START.
+  // vFeasible = largest cruise speed whose S-curve ramp keeps the knife
+  // inside αmax. Only the Pareto front of (|θ'|, |θ''|) can set the peak.
+  samples.sort((p, q) => q[0] - p[0] || q[1] - p[1]);
+  const front: number[][] = [];
+  for (const p of samples) if (!front.length || p[1] > front[front.length - 1][1]) front.push(p);
+  const ramp = (v: number) => rampDemand(v, front, config.axAmax, config.axJerk);
+  let lo = 0, hi = Math.min(vSteady, config.axVmax);
+  const rampLimited = ramp(hi) > config.knifeAmax;
+  if (rampLimited) {
+    for (let i = 0; i < 24; i++) {
+      const mid = (lo + hi) / 2;
+      if (ramp(mid) <= config.knifeAmax) lo = mid; else hi = mid;
+    }
+    cam.vFeasible = lo;
+  } else {
+    cam.vFeasible = vSteady;
+  }
   if (recipe.spd > cam.vFeasible + 1e-9) {
     warnings.push(
-      `LINE SPEED ${toMMin(recipe.spd).toFixed(0)} m/min EXCEEDS the knife axis limit ${toMMin(cam.vFeasible).toFixed(0)} m/min — expect following error and bad cuts`,
+      `LINE SPEED ${toMMin(recipe.spd).toFixed(0)} m/min EXCEEDS the knife axis limit ${toMMin(cam.vFeasible).toFixed(0)} m/min${rampLimited ? ' (set by the feed acceleration ramp — lower feed Amax/jerk to raise it)' : ''} — expect following error and bad cuts`,
     );
   }
 

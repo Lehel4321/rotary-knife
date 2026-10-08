@@ -234,4 +234,25 @@ describe('machine integration (headless production run)', () => {
     expect(duringRamp.length).toBeGreaterThan(0);
     for (const r of duringRamp) expect(Math.abs(r.err)).toBeLessThan(0.05);
   });
+
+  it('every speed up to MAX FEASIBLE can actually be started and run (feed ramp included)', () => {
+    // Short pieces: the knife spends its torque on the feed acceleration
+    // ramp (α = dθ/dφ · a_line), not only on the steady cam demand.
+    for (const [len, knives] of [[150, 1], [200, 1], [100, 2], [150, 2], [400, 1]] as const) {
+      const db = new SimulationEngine();
+      db.updateConfig({ knives });
+      db.updateRecipe({ len });
+      db.updateRecipe({ spd: db.vFeasibleLine() * 0.99 });
+      startMachine(db);
+      let errMax = 0;
+      const scans = 1000 + (4 * len * 1000) / db.recipe.spd; // ramp + four pieces
+      for (let i = 0; i < scans && db.state.running; i++) {
+        OB1_CyclicUpdate(db, 0.001);
+        errMax = Math.max(errMax, Math.abs(db.state.folErr));
+      }
+      expect(db.state.knifeFault, `${len}mm × ${knives} blade(s)`).toBe(false);
+      expect((errMax * 180) / Math.PI, `${len}mm × ${knives} blade(s)`).toBeLessThan(0.5);
+      expect(db.state.cuts, `${len}mm × ${knives} blade(s)`).toBeGreaterThan(2);
+    }
+  });
 });
