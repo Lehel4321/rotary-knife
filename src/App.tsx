@@ -16,7 +16,7 @@ export default function App() {
 
   const TabBtn = ({ id, label }: { id: 'machine' | 'log'; label: string }) => (
     <button
-      className={`text-xs font-bold uppercase pb-1 cursor-pointer transition-colors ${tab === id ? 'text-yellow-500 border-b-2 border-yellow-500' : 'text-zinc-500 hover:text-zinc-300 border-b-2 border-transparent'}`}
+      className={`text-xs font-bold uppercase whitespace-nowrap pb-1 cursor-pointer transition-colors ${tab === id ? 'text-yellow-500 border-b-2 border-yellow-500' : 'text-zinc-500 hover:text-zinc-300 border-b-2 border-transparent'}`}
       onClick={() => setTab(id)}
     >
       {label}
@@ -34,7 +34,7 @@ export default function App() {
 
   return (
     <div className="flex flex-col min-h-screen bg-[#09090b] text-[#e4e4e7] font-sans">
-      <header className="flex items-center justify-between px-6 py-4 border-b border-[#27272a] bg-[#09090b] flex-shrink-0">
+      <header className="flex flex-wrap items-center justify-between gap-3 px-6 py-4 border-b border-[#27272a] bg-[#09090b] flex-shrink-0">
         <div className="flex items-center gap-6">
           <div className="flex items-center gap-2">
             <div className="w-3 h-3 bg-yellow-500 rounded-sm"></div>
