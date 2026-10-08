@@ -341,11 +341,18 @@ export class SimulationEngine {
 
   /**
    * Guard door of the knife enclosure. Opening it while the machine runs
-   * trips an immediate safety stop (category 0 — this is a knife).
+   * trips an immediate safety stop (category 0 — this is a knife) and,
+   * like the E-Stop, drops the machine control: the trip latches
+   * needsReset, and only Control-ON clears and re-phases the machine.
+   * Leaving control ON let START resume the frozen cut (counted as a
+   * good piece) with needsReset still latched for a later Control-ON.
    */
   public toggleGuard() {
     this.state.guardOpen = !this.state.guardOpen;
-    if (this.state.guardOpen && this.state.running) this.safeStop(true);
+    if (this.state.guardOpen && this.state.running) {
+      this.safeStop(true);
+      this.state.controlOn = false;
+    }
     this.notify();
   }
 

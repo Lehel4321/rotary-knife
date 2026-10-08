@@ -16,7 +16,7 @@ import { SimulationEngine } from './SimulationEngine';
  *              refused while the door is open, and opening the door
  *              while running trips an immediate safety stop (a rotary
  *              knife gets a category 0 stop — no graceful run-down with
- *              an open door).
+ *              an open door) and drops the machine control.
  *   CONTROL ON software equivalent of the control voltage: without it,
  *              OB1 does not execute any motion block at all.
  *
@@ -32,6 +32,7 @@ export function FC_Safety(db: SimulationEngine) {
   // inside the material — that is exactly what needsReset is for).
   if (st.running && (st.estop || st.guardOpen)) {
     db.safeStop(true);
+    st.controlOn = false; // a trip is cleared only by Control-ON
     db.notify();
   }
 
