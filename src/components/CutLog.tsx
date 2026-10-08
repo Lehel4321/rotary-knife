@@ -1,4 +1,4 @@
-import { engine, toMMin } from '../engine/SimulationEngine';
+import { engine, toMMin, LOG_CAP } from '../engine/SimulationEngine';
 import { gradeFace } from './MachineCanvas';
 
 /**
@@ -27,7 +27,8 @@ export function CutLog() {
     <div className="bg-[#18181b] border border-[#27272a] rounded-lg p-4">
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-[0.65rem] uppercase tracking-[0.05em] text-[#71717a] font-semibold">
-          Cut log — {stats.n} cuts · mean err {stats.meanErr.toFixed(3)}mm · σ {stats.stdErr.toFixed(3)}mm · mean straightness {stats.meanStraight.toFixed(3)}mm
+          Cut log — {stats.n} cuts · mean err {stats.meanErr.toFixed(3)}mm · σ {stats.stdErr.toFixed(3)}mm · max |err| {stats.maxAbsErr.toFixed(3)}mm · mean straightness {stats.meanStraight.toFixed(3)}mm
+          <span className="normal-case tracking-normal text-zinc-600"> (all cuts since reset{stats.n + engine.state.trims > LOG_CAP ? ` · table & CSV show last ${LOG_CAP}` : ''})</span>
         </h3>
         <button onClick={exportCsv}
           className="border border-[#27272a] bg-[#09090b] text-[#f4f4f5] text-[0.7rem] font-semibold uppercase px-3 py-1.5 rounded hover:bg-[#27272a] transition-all cursor-pointer">

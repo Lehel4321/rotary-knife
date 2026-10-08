@@ -260,3 +260,70 @@ describe('motor limit adherence + sync contract across the recipe space', () => 
     }
   });
 });
+
+describe('cut-log statistics vs. the 400-row display window', () => {
+  it('header stats cover ALL cuts, not just the last 400 logged rows; reset clears them', () => {
+    const db = makeMachine({});
+    // Run until well past the log cap, mirroring every cut independently
+    let guard = 0;
+    while (db.state.cuts < 450 && guard++ < 3_000_000) OB1_CyclicUpdate(db, SCAN_TIME);
+    expect(db.state.cuts).toBeGreaterThanOrEqual(450);
+    expect(db.log.length).toBe(400); // display cap kept
+
+    const s = db.getStats();
+    expect(s.n).toBe(db.state.cuts); // header count == Cuts tile
+
+    // Reference: recompute from per-cut errors captured by hooking recordCut
+    // (replay the run with a recorder, deterministic engine)
+    const db2 = makeMachine({});
+    const errs: number[] = [];
+    const orig = db2.recordCut.bind(db2);
+    db2.recordCut = (rec) => { if (!rec.trim) errs.push(rec.err); orig(rec); };
+    guard = 0;
+    while (db2.state.cuts < 450 && guard++ < 3_000_000) OB1_CyclicUpdate(db2, SCAN_TIME);
+    expect(errs.length).toBe(db2.state.cuts);
+    const mean = errs.reduce((a, b) => a + b, 0) / errs.length;
+    const sd = Math.sqrt(errs.reduce((a, e) => a + (e - mean) ** 2, 0) / (errs.length - 1));
+    const mx = Math.max(...errs.map(Math.abs));
+    const s2 = db2.getStats();
+    expect(s2.n).toBe(errs.length);
+    expect(s2.meanErr).toBeCloseTo(mean, 9);
+    expect(s2.stdErr).toBeCloseTo(sd, 9);
+    expect(s2.maxAbsErr).toBeCloseTo(mx, 9);
+    // and they genuinely differ from a last-400-only computation's count
+    expect(s2.n).toBeGreaterThan(db2.log.filter(r => !r.trim).length);
+
+    db2.reset();
+    const z = db2.getStats();
+    expect(z.n).toBe(0);
+    expect(z.meanErr).toBe(0);
+    expect(z.maxAbsErr).toBe(0);
+  });
+});
+
+describe('running totals with synthetic error series', () => {
+  it('1000 cuts: header stats equal stats over all cuts while the log keeps 400', () => {
+    const db = new SimulationEngine();
+    const errs: number[] = [];
+    for (let i = 0; i < 1000; i++) {
+      const trim = i === 0;
+      const err = Math.sin(i * 0.37) * 0.3 + (i % 7 === 0 ? 0.4 : -0.05) + (i === 123 ? -1.7 : 0);
+      if (!trim) errs.push(err);
+      db.recordCut({ n: i + 1, t: i, len: 400 + err, err, trim, vLine: 1000, straight: null, skew: null, drag: null, folErrMax: 0 });
+    }
+    expect(db.log.length).toBe(400);
+    const mean = errs.reduce((a, b) => a + b, 0) / errs.length;
+    const sd = Math.sqrt(errs.reduce((a, e) => a + (e - mean) ** 2, 0) / (errs.length - 1));
+    const s = db.getStats();
+    expect(s.n).toBe(999);
+    expect(s.meanErr).toBeCloseTo(mean, 10);
+    expect(s.stdErr).toBeCloseTo(sd, 10);
+    expect(s.maxAbsErr).toBeCloseTo(1.7 + 0.0, 0);
+    expect(s.maxAbsErr).toBe(Math.max(...errs.map(Math.abs)));
+    // the early outlier (cut 123) has scrolled out of the window but still counts
+    expect(db.log.some(r => r.n === 124)).toBe(false);
+    db.reset();
+    expect(db.getStats().n).toBe(0);
+    expect(db.getStats().maxAbsErr).toBe(0);
+  });
+});
