@@ -93,6 +93,7 @@ export function FC_Cut(db: SimulationEngine) {
           rec.drag = face.drag;
           rec.folErrMax = Math.max(rec.folErrMax, db.trace.folErrMax);
           face.trim = rec.trim;
+          db.recordFace(rec);
           break;
         }
       }
@@ -133,8 +134,7 @@ export function FC_Cut(db: SimulationEngine) {
       drag: null,
       folErrMax: db.trace.folErrMax,
     };
-    db.log.push(rec);
-    if (db.log.length > 400) db.log.shift();
+    db.recordCut(rec);
     db.scopeCut = true;
     db.lastCutIdx = idx;
     db.notify();

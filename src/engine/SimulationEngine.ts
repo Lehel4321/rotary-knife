@@ -15,6 +15,8 @@ export const SCAN_TIME = 0.001;
 
 /** Scope ring buffer size: 1 kHz × 6 s of machine time. */
 const SCOPE_CAP = 6000;
+/** Rows kept for the cut-log table / CSV (statistics are NOT limited to these). */
+export const LOG_CAP = 400;
 
 /**
  * Setpoint validation: a finite value is clamped to [min, max]; anything
@@ -74,7 +76,14 @@ export class SimulationEngine {
 
   // --- Data Block: Buffers ---
   public pieces: Piece[] = [];
+  /** Display window only: the newest LOG_CAP cuts. Statistics do NOT read it. */
   public log: CutRecord[] = [];
+  /**
+   * Running campaign totals over ALL non-trim cuts since the last master
+   * reset (the log is capped, these are not). Length error uses Welford's
+   * online mean/M2; straightness is added when the face measurement lands.
+   */
+  public tally = SimulationEngine.emptyTally();
   public face: CutFace | null = null;
   /** Live blade-in-material trace (FC_Cut writes, canvas reads). */
   public trace = { active: false, D0: 0, pts: [] as FacePoint[], folErrMax: 0 };
@@ -108,6 +117,32 @@ export class SimulationEngine {
   constructor() {
     this.cam = buildCam(this.recipe, this.params, this.config);
     this.rephase();
+  }
+
+  static emptyTally() {
+    return { n: 0, mean: 0, m2: 0, maxAbsErr: 0, nFace: 0, sumStraight: 0, maxStraight: 0 };
+  }
+
+  /** Append a cut to the display log (capped) and update the running totals. */
+  public recordCut(rec: CutRecord) {
+    this.log.push(rec);
+    if (this.log.length > LOG_CAP) this.log.shift();
+    if (rec.trim) return;
+    const t = this.tally;
+    t.n++;
+    const d = rec.err - t.mean;
+    t.mean += d / t.n;
+    t.m2 += d * (rec.err - t.mean);
+    if (Math.abs(rec.err) > t.maxAbsErr) t.maxAbsErr = Math.abs(rec.err);
+  }
+
+  /** A face measurement landed for a (non-trim) logged cut. */
+  public recordFace(rec: CutRecord) {
+    if (rec.trim || rec.straight === null) return;
+    const t = this.tally;
+    t.nFace++;
+    t.sumStraight += rec.straight;
+    if (rec.straight > t.maxStraight) t.maxStraight = rec.straight;
   }
 
   // --- HMI Event System ---
@@ -145,23 +180,20 @@ export class SimulationEngine {
   }
 
   /**
-   * Aggregated test-campaign statistics over the logged (non-trim) cuts —
-   * the "how fast / how long / how exact" numbers this rig exists for.
+   * Aggregated test-campaign statistics over ALL non-trim cuts since the
+   * last master reset (running totals, independent of the 400-row log
+   * window) — the "how fast / how long / how exact" numbers this rig exists
+   * for. Rate / last / lastFace come from the newest logged cuts.
    */
   public getStats() {
     const good = this.log.filter(r => !r.trim);
-    const n = good.length;
-    let meanErr = 0, stdErr = 0, maxAbsErr = 0;
-    let meanStraight = 0, maxStraight = 0, nFace = 0;
-    for (const r of good) {
-      meanErr += r.err;
-      if (Math.abs(r.err) > maxAbsErr) maxAbsErr = Math.abs(r.err);
-      if (r.straight !== null) { meanStraight += r.straight; nFace++; if (r.straight > maxStraight) maxStraight = r.straight; }
-    }
-    if (n > 0) meanErr /= n;
-    if (nFace > 0) meanStraight /= nFace;
-    for (const r of good) stdErr += (r.err - meanErr) ** 2;
-    stdErr = n > 1 ? Math.sqrt(stdErr / (n - 1)) : 0;
+    const t = this.tally;
+    const n = t.n;
+    const meanErr = t.mean;
+    const stdErr = n > 1 ? Math.sqrt(t.m2 / (n - 1)) : 0;
+    const maxAbsErr = t.maxAbsErr;
+    const meanStraight = t.nFace > 0 ? t.sumStraight / t.nFace : 0;
+    const maxStraight = t.maxStraight;
     // Measured rate over the most recent cuts (timestamps, machine time)
     const recent = good.slice(-20);
     const rate = recent.length >= 2
@@ -403,6 +435,7 @@ export class SimulationEngine {
     this.state.trims = 0;
     this.state.matCut = 0;
     this.log = [];
+    this.tally = SimulationEngine.emptyTally();
     this.scope.n = 0; this.scope.i = 0;
     this.state.D = 0; this.state.v = 0; this.state.a = 0;
     this.pieces = [];
